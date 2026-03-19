@@ -107,6 +107,13 @@ playwriter -e "state.cdp = await getCDPSession({ page }); state.editor = createE
 playwriter -e "await state.editor.edit({ url: 'https://example.com/app.js', oldString: 'const DEBUG = false', newString: 'const DEBUG = true' })"
 ```
 
+**Screenshot directly in the tool result:**
+
+```bash
+playwriter -e "await screenshot({ page })"
+playwriter -e "await screenshot({ locator: page.locator('main') })"
+```
+
 **Screenshot with labels:**
 
 ```bash

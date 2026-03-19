@@ -24,10 +24,11 @@ import { getStylesForLocator, formatStylesAsText, type StylesResult } from './st
 import { getReactSource, type ReactSourceLocation } from './react-source.js'
 import { ScopedFS } from './scoped-fs.js'
 import {
+  screenshot,
   screenshotWithAccessibilityLabels,
   getAriaSnapshot,
   resizeImage,
-  type ScreenshotResult,
+  type CollectedScreenshotResult,
   type SnapshotFormat,
 } from './aria-snapshot.js'
 import { createGhostBrowserChrome, type GhostBrowserCommandResult } from './ghost-browser.js'
@@ -49,6 +50,20 @@ export class CodeExecutionTimeoutError extends Error {
     super(`Code execution timed out after ${timeout}ms`)
     this.name = 'CodeExecutionTimeoutError'
   }
+}
+
+const MAX_TIMEOUT_CODE_PREVIEW_LENGTH = 240
+
+export function formatTimeoutCodePreview(options: { code: string; maxLength?: number }): string {
+  const { code, maxLength = MAX_TIMEOUT_CODE_PREVIEW_LENGTH } = options
+  const singleLineCode = code.replace(/\s+/g, ' ').trim()
+  if (!singleLineCode) {
+    return ''
+  }
+  if (singleLineCode.length <= maxLength) {
+    return singleLineCode
+  }
+  return `${singleLineCode.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
 }
 
 const usefulGlobals = {
@@ -970,11 +985,53 @@ export class PlaywrightExecutor {
         return getReactSource({ locator: options.locator, cdp })
       }
 
-      const screenshotCollector: ScreenshotResult[] = []
+      const screenshotCollector: CollectedScreenshotResult[] = []
 
-      const screenshotWithAccessibilityLabelsFn = async (options: { page: Page; interactiveOnly?: boolean }) => {
+      const screenshotFn = async (
+        options:
+          | ({ page: Page; locator?: undefined } & Omit<NonNullable<Parameters<Page['screenshot']>[0]>, 'path'>)
+          | ({ locator: Locator; page?: Page } & Omit<NonNullable<Parameters<Locator['screenshot']>[0]>, 'path'>),
+      ) => {
+        return screenshot({
+          ...options,
+          collector: screenshotCollector,
+          logger: {
+            info: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+            error: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+          },
+        })
+      }
+
+      const screenshotWithAccessibilityLabelsFn = async (
+        options:
+          | {
+              page: Page
+              locator?: Locator
+              interactiveOnly?: boolean
+            }
+          | {
+              locator: Locator
+              page?: Page
+              interactiveOnly?: boolean
+            },
+      ) => {
+        const page = (() => {
+          if (options.page) {
+            return options.page
+          }
+          const locator = options.locator
+          if (!locator) {
+            throw new Error('Expected locator when page is omitted')
+          }
+          return locator.page()
+        })()
         return screenshotWithAccessibilityLabels({
           ...options,
+          page,
           collector: screenshotCollector,
           logger: {
             info: (...args) => {
@@ -1000,7 +1057,7 @@ export class PlaywrightExecutor {
         },
       })
 
-      const showGhostCursor = async (options?: ({ page?: Page } & GhostCursorClientOptions)) => {
+      const showGhostCursor = async (options?: { page?: Page } & GhostCursorClientOptions) => {
         const targetPage = options?.page || page
         const cursorOptions: GhostCursorClientOptions | undefined = (() => {
           if (!options) {
@@ -1069,6 +1126,7 @@ export class PlaywrightExecutor {
         getStylesForLocator: getStylesForLocatorFn,
         formatStylesAsText,
         getReactSource: getReactSourceFn,
+        screenshot: screenshotFn,
         screenshotWithAccessibilityLabels: screenshotWithAccessibilityLabelsFn,
         resizeImage,
         ghostCursor: {
@@ -1102,18 +1160,15 @@ export class PlaywrightExecutor {
 
       const vmContext = vm.createContext(vmContextObj)
       const autoReturnExpr = getAutoReturnExpression(code)
-      const wrappedCode = autoReturnExpr !== null
-        ? `(async () => { return await (${autoReturnExpr}) })()`
-        : `(async () => { ${code} })()`
+      const wrappedCode =
+        autoReturnExpr !== null ? `(async () => { return await (${autoReturnExpr}) })()` : `(async () => { ${code} })()`
       const hasExplicitReturn = autoReturnExpr !== null || /\breturn\b/.test(code)
 
       // Track execution timestamps relative to recording start (seconds).
       // Used to identify idle gaps that can be sped up in demo videos.
       // Captured before execution so we can record timing even if it throws.
       const recordingStartSnapshot = this.recordingStartedAt
-      const execStartSec = recordingStartSnapshot !== null
-        ? (Date.now() - recordingStartSnapshot) / 1000
-        : -1
+      const execStartSec = recordingStartSnapshot !== null ? (Date.now() - recordingStartSnapshot) / 1000 : -1
 
       const result = await (async () => {
         try {
@@ -1126,7 +1181,11 @@ export class PlaywrightExecutor {
           // that should not be sped up in the demo video.
           // Compare against snapshot to avoid cross-session contamination if
           // recording was stopped and restarted inside the same execute() call.
-          if (recordingStartSnapshot !== null && execStartSec >= 0 && this.recordingStartedAt === recordingStartSnapshot) {
+          if (
+            recordingStartSnapshot !== null &&
+            execStartSec >= 0 &&
+            this.recordingStartedAt === recordingStartSnapshot
+          ) {
             const execEndSec = (Date.now() - recordingStartSnapshot) / 1000
             this.executionTimestamps.push({ start: execStartSec, end: execEndSec })
           }
@@ -1163,8 +1222,15 @@ export class PlaywrightExecutor {
 
       for (const screenshot of screenshotCollector) {
         responseText += `\nScreenshot saved to: ${screenshot.path}\n`
-        responseText += `Labels shown: ${screenshot.labelCount}\n\n`
-        responseText += `Accessibility snapshot:\n${screenshot.snapshot}\n`
+        if (screenshot.inlineWarning) {
+          responseText += `${screenshot.inlineWarning}\n`
+        }
+        if (screenshot.labelCount !== undefined) {
+          responseText += `Labels shown: ${screenshot.labelCount}\n\n`
+        }
+        if (screenshot.snapshot) {
+          responseText += `Accessibility snapshot:\n${screenshot.snapshot}\n`
+        }
       }
 
       const MAX_LENGTH = 10000
@@ -1175,7 +1241,12 @@ export class PlaywrightExecutor {
           `\n\n[Truncated to ${MAX_LENGTH} characters. Use search to find specific content]`
       }
 
-      const images = screenshotCollector.map((s) => ({ data: s.base64, mimeType: s.mimeType }))
+      const images = screenshotCollector.flatMap((s) => {
+        if (!s.base64) {
+          return []
+        }
+        return [{ data: s.base64, mimeType: s.mimeType }]
+      })
 
       return { text: finalText, images, isError: false }
     } catch (error: any) {
@@ -1187,6 +1258,8 @@ export class PlaywrightExecutor {
 
       const logsText = formatConsoleLogs(consoleLogs, 'Console output (before error)')
       const warningText = this.flushWarningsForScope(warningScope)
+      const timeoutCodePreview = isTimeoutError ? formatTimeoutCodePreview({ code }) : ''
+      const timeoutCodeText = timeoutCodePreview ? `\nWhile executing: ${timeoutCodePreview}` : ''
       const resetHint = isTimeoutError
         ? ''
         : '\n\n[HINT: If this is an internal Playwright error, page/browser closed, or connection issue, call reset to reconnect.]'
@@ -1194,7 +1267,7 @@ export class PlaywrightExecutor {
       // timeout stacks are internal noise (Promise.race / setTimeout); only show the message
       const errorText = isTimeoutError ? error.message : errorStack
       return {
-        text: `${logsText}${warningText}\nError executing code: ${errorText}${resetHint}`,
+        text: `${logsText}${warningText}\nError executing code: ${errorText}${timeoutCodeText}${resetHint}`,
         images: [],
         isError: true,
       }

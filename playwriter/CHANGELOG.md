@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.90
+
+1. **Add plain `screenshot(...)` execute helper** — agents can now capture page or locator screenshots and receive the image directly in the MCP/CLI tool result without needing a separate file-view step.
+2. **Allow scoped labeled screenshots in docs and executor typing** — `screenshotWithAccessibilityLabels(...)` now documents and accepts `locator` scoping in the sandbox API as well.
+3. **Document clipped screenshots for agents** — the MCP skill docs now show that `screenshot({ page, clip })` forwards Playwright page screenshot clipping, so agents know they can capture arbitrary pixel regions without needing a locator.
+4. **Include timed out code previews in execute errors** — VM-level execute timeouts now include a compact one-line preview of the JavaScript snippet that was running, so agents can see which command stalled even when the internal timeout stack is suppressed.
+5. **Fix locator-only labeled screenshots** — `screenshotWithAccessibilityLabels(...)` and `showAriaRefLabels(...)` now derive the owning page from `locator.page()` when callers omit `page`, matching the documented sandbox API and preventing `Cannot read properties of undefined (reading 'evaluate')`.
+
 ## 0.0.89
 
 1. **More reliable downloads in extension mode** — download behavior now stays compatible with both `Page.download*` and `Browser.download*` event paths, so Playwright flows like `page.waitForEvent('download')` work consistently when connected through the relay.

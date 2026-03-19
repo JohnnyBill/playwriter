@@ -64,8 +64,11 @@ playwriter -s 1 -e 'await state.page.click("button")'
 # Get page title
 playwriter -s 1 -e 'await state.page.title()'
 
-# Take a screenshot
-playwriter -s 1 -e 'await state.page.screenshot({ path: "screenshot.png", scale: "css" })'
+# Take a screenshot and return it in the tool response
+playwriter -s 1 -e 'await screenshot({ page: state.page, scale: "css" })'
+
+# Take a scoped locator screenshot and return only that region
+playwriter -s 1 -e 'await screenshot({ locator: state.page.locator("main"), scale: "css" })'
 
 # Get accessibility snapshot
 playwriter -s 1 -e 'await snapshot({ page: state.page })'
@@ -97,6 +100,7 @@ console.log({ title, url });
 ```
 
 **Quoting rules summary:**
+
 - **Single quotes** (`'...'`): best for one-liners. No bash expansion at all. But you cannot include a literal single quote inside — use double quotes for JS strings instead.
 - **Heredoc** (`<<'EOF'`): best for multiline code. The quoted `'EOF'` delimiter disables all bash expansion. Any character works inside, including `$`, backticks, and single quotes.
 - **`$'...'`**: allows `\'` escaping but `\n`, `\t`, `\\` become special — conflicts with JS regex patterns.
@@ -756,15 +760,31 @@ const matches = await editor.grep({ regex: /console\.log/ })
 await editor.edit({ url: matches[0].url, oldString: 'DEBUG = false', newString: 'DEBUG = true' })
 ```
 
-**screenshotWithAccessibilityLabels** - take a screenshot with Vimium-style visual labels overlaid on interactive elements. Shows labels, captures screenshot, then removes labels. The image and accessibility snapshot are automatically included in the response. Can be called multiple times to capture multiple screenshots. Use a timeout of **20 seconds** for complex pages.
+**Screenshot helpers** - `screenshot()` and `screenshotWithAccessibilityLabels()` both return images directly in the response. Both accept the same targeting shape: either `{ page: state.page }` or `{ locator: state.page.locator(...) }`. Use `screenshotWithAccessibilityLabels()` when you need visual refs on interactive elements; it also accepts `interactiveOnly`.
 
-Prefer this for pages with grids, image galleries, maps, or complex visual layouts where spatial position matters. For simple text-heavy pages, `snapshot` with search is faster and uses fewer tokens.
+For layout or design debugging, prefer a scoped locator screenshot or a tight `clip` over a full-page capture. Show the model the smallest region that still contains the issue.
+
+```js
+await screenshot({ page: state.page, scale: 'css' })
+
+await screenshot({
+  page: state.page,
+  clip: { x: 100, y: 100, width: 400, height: 300 },
+})
+
+await screenshot({ locator: state.page.locator('main') })
+```
+
+Prefer `screenshotWithAccessibilityLabels()` for grids, galleries, maps, and other spatial layouts where you need refs to click. For simple text-heavy pages, `snapshot` with search is faster and cheaper. Use a timeout of **20 seconds** for complex pages.
 
 ```js
 await screenshotWithAccessibilityLabels({ page: state.page })
 // Image and accessibility snapshot are automatically included in response
 // Use refs from snapshot to interact with elements
 await state.page.locator('[id="submit-btn"]').click()
+
+await screenshotWithAccessibilityLabels({ page: state.page, locator: state.page.locator('main') })
+// Scoped labeled screenshot is also included in the response
 
 // Can take multiple screenshots in one execution
 await screenshotWithAccessibilityLabels({ page: state.page })

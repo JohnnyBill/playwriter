@@ -103,37 +103,37 @@ describe('Snapshot & Screenshot Tests', () => {
         params: c.params,
       })),
     ).toMatchInlineSnapshot(`
-          [
-            {
-              "method": "Page.captureScreenshot",
-              "params": {
-                "captureBeyondViewport": false,
-                "clip": {
-                  "height": 720,
-                  "scale": 1,
-                  "width": 1280,
-                  "x": 0,
-                  "y": 0,
-                },
-                "format": "png",
-              },
+      [
+        {
+          "method": "Page.captureScreenshot",
+          "params": {
+            "captureBeyondViewport": false,
+            "clip": {
+              "height": 720,
+              "scale": 1,
+              "width": 1280,
+              "x": 0,
+              "y": 0,
             },
-            {
-              "method": "Page.captureScreenshot",
-              "params": {
-                "captureBeyondViewport": false,
-                "clip": {
-                  "height": 581,
-                  "scale": 1,
-                  "width": 1280,
-                  "x": 0,
-                  "y": 0,
-                },
-                "format": "png",
-              },
+            "format": "png",
+          },
+        },
+        {
+          "method": "Page.captureScreenshot",
+          "params": {
+            "captureBeyondViewport": false,
+            "clip": {
+              "height": 720,
+              "scale": 1,
+              "width": 1280,
+              "x": 0,
+              "y": 0,
             },
-          ]
-        `)
+            "format": "png",
+          },
+        },
+      ]
+    `)
 
     const screenshotPath = path.join(os.tmpdir(), 'playwriter-test-screenshot.png')
     fs.writeFileSync(screenshotPath, viewportScreenshot)
@@ -893,6 +893,250 @@ describe('Snapshot & Screenshot Tests', () => {
     console.log(`Screenshots saved to: ${assetsDir}`)
   }, 180000)
 
+  it('should scroll scoped locators into view before rendering labels', async () => {
+    const browserContext = getBrowserContext()
+    const { showAriaRefLabels, hideAriaRefLabels } = await import('./aria-snapshot.js')
+
+    const page = await browserContext.newPage()
+    await page.setContent(`
+            <div style="height: 1800px; background: linear-gradient(#faf6ef, #f0e2c6);"></div>
+            <main style="width: 320px; padding: 16px; border: 4px solid #111; background: #f8f1e7;">
+                <button id="offscreen-action">Offscreen Action</button>
+            </main>
+        `)
+
+    const { snapshot, labelCount } = await showAriaRefLabels({
+      page,
+      locator: page.locator('main'),
+    })
+
+    expect(snapshot).toContain('Offscreen Action')
+    expect(labelCount).toBeGreaterThan(0)
+    expect(await page.evaluate(() => {
+      return window.scrollY
+    })).toBeGreaterThan(0)
+
+    await hideAriaRefLabels({ page })
+    await page.close()
+  }, 60000)
+
+  it('should take scoped locator screenshots via MCP execute tool', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+
+    const page = await browserContext.newPage()
+    await page.setContent(`
+            <main style="width: 320px; padding: 16px; border: 4px solid #111; background: #f8f1e7;">
+                <h1>Scoped Panel</h1>
+                <p>This screenshot should only include the panel.</p>
+            </main>
+            <aside style="margin-top: 24px; width: 900px; height: 420px; background: #1c4c7a;"></aside>
+        `)
+    await page.bringToFront()
+
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await new Promise((r) => setTimeout(r, 400))
+
+    const result = await client.callTool({
+      name: 'execute',
+      arguments: {
+        code: js`
+                    let testPage;
+                    for (const p of context.pages()) {
+                        const html = await p.content();
+                        if (html.includes('Scoped Panel')) { testPage = p; break; }
+                    }
+                    if (!testPage) throw new Error('Test page not found');
+                    await screenshot({ locator: testPage.locator('main') });
+                `,
+        timeout: 15000,
+      },
+    })
+
+    expect(result.isError).toBeFalsy()
+
+    const content = result.content as Array<
+      { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+    >
+    expect(content.length).toBe(2)
+
+    const textContent = content.find((c) => c.type === 'text')
+    expect(textContent).toBeDefined()
+    if (!textContent || textContent.type !== 'text') {
+      throw new Error('Expected text content')
+    }
+    expect(textContent.text).toContain('Screenshot saved to:')
+    expect(textContent.text).toContain('.png')
+    expect(textContent.text).not.toContain('Labels shown:')
+    expect(textContent.text).not.toContain('Accessibility snapshot:')
+
+    const imageContent = content.find((c) => c.type === 'image')
+    expect(imageContent).toBeDefined()
+    if (!imageContent || imageContent.type !== 'image') {
+      throw new Error('Expected image content')
+    }
+    expect(imageContent.mimeType).toBe('image/png')
+    expect(imageContent.data.length).toBeGreaterThan(100)
+
+    const buffer = Buffer.from(imageContent.data, 'base64')
+    const dimensions = imageSize(buffer)
+
+    expect(dimensions.type).toBe('png')
+    expect(dimensions.width).toBeLessThan(500)
+    expect(dimensions.height).toBeLessThan(300)
+
+    await page.close()
+  }, 60000)
+
+  it('should take scoped labeled screenshots via MCP execute tool', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+
+    const page = await browserContext.newPage()
+    await page.setContent(`
+            <main style="width: 320px; padding: 16px; border: 4px solid #111; background: #f8f1e7;">
+                <button id="scoped-action">Scoped Action</button>
+                <p>This labeled screenshot should only include the panel.</p>
+            </main>
+            <aside style="margin-top: 24px; width: 900px; height: 420px; background: #1c4c7a;"></aside>
+        `)
+    await page.bringToFront()
+
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await new Promise((r) => setTimeout(r, 400))
+
+    const result = await client.callTool({
+      name: 'execute',
+      arguments: {
+        code: js`
+                    let testPage;
+                    for (const p of context.pages()) {
+                        const html = await p.content();
+                        if (html.includes('Scoped Action')) { testPage = p; break; }
+                    }
+                    if (!testPage) throw new Error('Test page not found');
+                    await screenshotWithAccessibilityLabels({
+                        page: testPage,
+                        locator: testPage.locator('main'),
+                    });
+                `,
+        timeout: 15000,
+      },
+    })
+
+    expect(result.isError).toBeFalsy()
+
+    const content = result.content as Array<
+      { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+    >
+    expect(content.length).toBe(2)
+
+    const textContent = content.find((c) => c.type === 'text')
+    expect(textContent).toBeDefined()
+    if (!textContent || textContent.type !== 'text') {
+      throw new Error('Expected text content')
+    }
+    expect(textContent.text).toContain('Screenshot saved to:')
+    expect(textContent.text).toContain('.jpg')
+    expect(textContent.text).toContain('Labels shown:')
+    expect(textContent.text).toContain('Accessibility snapshot:')
+    expect(textContent.text).toContain('Scoped Action')
+
+    const imageContent = content.find((c) => c.type === 'image')
+    expect(imageContent).toBeDefined()
+    if (!imageContent || imageContent.type !== 'image') {
+      throw new Error('Expected image content')
+    }
+    expect(imageContent.mimeType).toBe('image/jpeg')
+    expect(imageContent.data.length).toBeGreaterThan(100)
+
+    const buffer = Buffer.from(imageContent.data, 'base64')
+    const dimensions = imageSize(buffer)
+
+    expect(dimensions.type).toBe('jpg')
+    expect(dimensions.width).toBeLessThan(500)
+    expect(dimensions.height).toBeLessThan(300)
+
+    await page.close()
+  }, 60000)
+
+  it('should take locator-only labeled screenshots via MCP execute tool', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+
+    const page = await browserContext.newPage()
+    await page.setContent(`
+            <main style="width: 320px; padding: 16px; border: 4px solid #111; background: #f8f1e7;">
+                <button id="locator-only-action">Locator Only Action</button>
+                <p>This labeled screenshot should work without passing page explicitly.</p>
+            </main>
+            <aside style="margin-top: 24px; width: 900px; height: 420px; background: #1c4c7a;"></aside>
+        `)
+    await page.bringToFront()
+
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await new Promise((r) => setTimeout(r, 400))
+
+    const result = await client.callTool({
+      name: 'execute',
+      arguments: {
+        code: js`
+                    let testPage;
+                    for (const p of context.pages()) {
+                        const html = await p.content();
+                        if (html.includes('locator-only-action')) { testPage = p; break; }
+                    }
+                    if (!testPage) throw new Error('Test page not found');
+                    await screenshotWithAccessibilityLabels({
+                        locator: testPage.locator('main'),
+                    });
+                `,
+        timeout: 15000,
+      },
+    })
+
+    expect(result.isError).toBeFalsy()
+
+    const content = result.content as Array<
+      { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+    >
+    expect(content.length).toBe(2)
+
+    const textContent = content.find((c) => c.type === 'text')
+    expect(textContent).toBeDefined()
+    if (!textContent || textContent.type !== 'text') {
+      throw new Error('Expected text content')
+    }
+    expect(textContent.text).toContain('Screenshot saved to:')
+    expect(textContent.text).toContain('.jpg')
+    expect(textContent.text).toContain('Labels shown:')
+    expect(textContent.text).toContain('Accessibility snapshot:')
+    expect(textContent.text).toContain('Locator Only Action')
+
+    const imageContent = content.find((c) => c.type === 'image')
+    expect(imageContent).toBeDefined()
+    if (!imageContent || imageContent.type !== 'image') {
+      throw new Error('Expected image content')
+    }
+    expect(imageContent.mimeType).toBe('image/jpeg')
+    expect(imageContent.data.length).toBeGreaterThan(100)
+
+    const buffer = Buffer.from(imageContent.data, 'base64')
+    const dimensions = imageSize(buffer)
+
+    expect(dimensions.type).toBe('jpg')
+    expect(dimensions.width).toBeLessThan(500)
+    expect(dimensions.height).toBeLessThan(300)
+
+    await page.close()
+  }, 60000)
+
   it('should take screenshot with accessibility labels via MCP execute tool', async () => {
     const browserContext = getBrowserContext()
     const serviceWorker = await getExtensionServiceWorker(browserContext)
@@ -980,11 +1224,16 @@ describe('Snapshot & Screenshot Tests', () => {
 
     expect(result.isError).toBeFalsy()
 
-    const content = result.content as any[]
+    const content = result.content as Array<
+      { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+    >
     expect(content.length).toBe(2)
 
     const textContent = content.find((c) => c.type === 'text')
     expect(textContent).toBeDefined()
+    if (!textContent || textContent.type !== 'text') {
+      throw new Error('Expected text content')
+    }
     expect(textContent.text).toContain('Screenshot saved to:')
     expect(textContent.text).toContain('.jpg')
     expect(textContent.text).toContain('Labels shown:')
@@ -993,8 +1242,10 @@ describe('Snapshot & Screenshot Tests', () => {
 
     const imageContent = content.find((c) => c.type === 'image')
     expect(imageContent).toBeDefined()
+    if (!imageContent || imageContent.type !== 'image') {
+      throw new Error('Expected image content')
+    }
     expect(imageContent.mimeType).toBe('image/jpeg')
-    expect(imageContent.data).toBeDefined()
     expect(imageContent.data.length).toBeGreaterThan(100)
 
     const buffer = Buffer.from(imageContent.data, 'base64')

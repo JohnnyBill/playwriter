@@ -76,12 +76,13 @@ export type AriaSnapshotNode = {
   children: AriaSnapshotNode[]
 }
 
-export interface ScreenshotResult {
+export interface CollectedScreenshotResult {
   path: string
-  base64: string
-  mimeType: 'image/jpeg'
-  snapshot: string
-  labelCount: number
+  base64?: string
+  mimeType: 'image/jpeg' | 'image/png'
+  snapshot?: string
+  labelCount?: number
+  inlineWarning?: string
 }
 
 // ============================================================================
@@ -117,6 +118,188 @@ export interface ResizeImageResult {
   mimeType: 'image/jpeg'
   /** Only set if output path was provided */
   path?: string
+}
+
+type ScreenshotLogger = { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void }
+
+type PageScreenshotOptions = NonNullable<Parameters<Page['screenshot']>[0]>
+type LocatorScreenshotOptions = NonNullable<Parameters<Locator['screenshot']>[0]>
+
+type ScreenshotTransportOptions =
+  | ({
+      page: Page
+      locator?: undefined
+    } & Omit<PageScreenshotOptions, 'path'>)
+  | ({
+      locator: Locator
+      page?: Page
+    } & Omit<LocatorScreenshotOptions, 'path'>)
+
+async function resizeScreenshotBufferForLlm({
+  buffer,
+  mimeType,
+  quality,
+}: {
+  buffer: Buffer
+  mimeType: 'image/jpeg' | 'image/png'
+  quality?: number
+}): Promise<Buffer> {
+  const sharp = await sharpPromise
+  if (!sharp) {
+    return buffer
+  }
+
+  if (mimeType === 'image/png') {
+    return await sharp(buffer)
+      .resize({
+        width: LLM_MAX_DIMENSION,
+        height: LLM_MAX_DIMENSION,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .png()
+      .toBuffer()
+  }
+
+  return await sharp(buffer)
+    .resize({
+      width: LLM_MAX_DIMENSION,
+      height: LLM_MAX_DIMENSION,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: quality ?? 80 })
+    .toBuffer()
+}
+
+function ensureTmpDir(): string {
+  const tmpDir = path.join(process.cwd(), 'tmp')
+  if (!fs.existsSync(tmpDir)) {
+    fs.mkdirSync(tmpDir, { recursive: true })
+  }
+  return tmpDir
+}
+
+function createCollectedScreenshotPath({ mimeType }: { mimeType: 'image/jpeg' | 'image/png' }): string {
+  const timestamp = Date.now()
+  const random = Math.random().toString(36).slice(2, 6)
+  const extension = mimeType === 'image/png' ? 'png' : 'jpg'
+  const filename = `playwriter-screenshot-${timestamp}-${random}.${extension}`
+  return path.join(ensureTmpDir(), filename)
+}
+
+async function collectScreenshot({
+  buffer,
+  mimeType,
+  quality,
+  collector,
+  logger,
+  snapshot,
+  labelCount,
+}: {
+  buffer: Buffer
+  mimeType: 'image/jpeg' | 'image/png'
+  quality?: number
+  collector: CollectedScreenshotResult[]
+  logger?: ScreenshotLogger
+  snapshot?: string
+  labelCount?: number
+}): Promise<void> {
+  const resizeStart = Date.now()
+  const sharp = await sharpPromise
+  const screenshotPath = createCollectedScreenshotPath({ mimeType })
+  if (!sharp) {
+    logger?.error?.('[playwriter] sharp not available, saving screenshot file without inline image')
+    fs.writeFileSync(screenshotPath, buffer)
+    collector.push({
+      path: screenshotPath,
+      mimeType,
+      ...(snapshot ? { snapshot } : {}),
+      ...(labelCount !== undefined ? { labelCount } : {}),
+      inlineWarning: 'Image content was not inlined because sharp is not available. Open the saved file path instead.',
+    })
+    return
+  }
+
+  const resizedBuffer = await (async (): Promise<Buffer | null> => {
+    try {
+      return await resizeScreenshotBufferForLlm({ buffer, mimeType, quality })
+    } catch (error) {
+      logger?.error?.('[playwriter] screenshot resize failed, saving screenshot file without inline image:', error)
+      return null
+    }
+  })()
+  logger?.info?.(`screenshot resize: ${Date.now() - resizeStart}ms`)
+  if (!resizedBuffer) {
+    fs.writeFileSync(screenshotPath, buffer)
+    collector.push({
+      path: screenshotPath,
+      mimeType,
+      ...(snapshot ? { snapshot } : {}),
+      ...(labelCount !== undefined ? { labelCount } : {}),
+      inlineWarning: 'Image content was not inlined because resizing failed. Open the saved file path instead.',
+    })
+    return
+  }
+
+  fs.writeFileSync(screenshotPath, resizedBuffer)
+
+  collector.push({
+    path: screenshotPath,
+    base64: resizedBuffer.toString('base64'),
+    mimeType,
+    ...(snapshot ? { snapshot } : {}),
+    ...(labelCount !== undefined ? { labelCount } : {}),
+  })
+
+  if (resizedBuffer !== buffer) {
+    logger?.info?.(`screenshot resize: ${buffer.length}B -> ${resizedBuffer.length}B`)
+  }
+}
+
+/**
+ * Capture a screenshot and include the image directly in the execute response.
+ * Supports either `page` or `locator` screenshots so agents can scope vision
+ * input to the relevant region without needing a second file-view step.
+ */
+export async function screenshot(
+  options: ScreenshotTransportOptions & { collector: CollectedScreenshotResult[]; logger?: ScreenshotLogger },
+): Promise<void> {
+  const { collector, logger } = options
+  const screenshotStart = Date.now()
+
+  if (options.locator) {
+    const {
+      locator,
+      page: _ignoredPage,
+      collector: _ignoredCollector,
+      logger: _ignoredLogger,
+      ...locatorOptions
+    } = options
+    const rawBuffer = await locator.screenshot(locatorOptions)
+    logger?.info?.(`locator.screenshot: ${Date.now() - screenshotStart}ms`)
+    const mimeType = locatorOptions.type === 'jpeg' ? 'image/jpeg' : 'image/png'
+    await collectScreenshot({
+      buffer: rawBuffer,
+      mimeType,
+      quality: locatorOptions.type === 'jpeg' ? locatorOptions.quality : undefined,
+      collector,
+      logger,
+    })
+    return
+  }
+
+  const { page, collector: _ignoredCollector, logger: _ignoredLogger, ...pageOptions } = options
+  const rawBuffer = await page.screenshot(pageOptions)
+  logger?.info?.(`page.screenshot: ${Date.now() - screenshotStart}ms`)
+  const mimeType = pageOptions.type === 'jpeg' ? 'image/jpeg' : 'image/png'
+  await collectScreenshot({
+    buffer: rawBuffer,
+    mimeType,
+    quality: pageOptions.type === 'jpeg' ? pageOptions.quality : undefined,
+    collector,
+    logger,
+  })
 }
 
 /**
@@ -163,10 +346,7 @@ export async function resizeImage(options: ResizeImageOptions): Promise<ResizeIm
     }
   })()
 
-  const buffer = await sharp(inputBuffer)
-    .resize(resizeOpts)
-    .jpeg({ quality })
-    .toBuffer()
+  const buffer = await sharp(inputBuffer).resize(resizeOpts).jpeg({ quality }).toBuffer()
 
   // Default: overwrite input file. When input is a Buffer, no file is written
   // unless output is explicitly set.
@@ -1409,6 +1589,12 @@ export async function showAriaRefLabels({
   const log = logger?.info ?? logger?.error ?? console.error
 
   log(`[showAriaRefLabels] starting...`)
+  if (locator) {
+    // Scoped label rendering must scroll first so offscreen locators end up in
+    // the same viewport that renderA11yLabels() uses to decide which refs to
+    // overlay and screenshotWithAccessibilityLabels() later captures.
+    await locator.scrollIntoViewIfNeeded()
+  }
   await ensureA11yClient(page)
   log(`[showAriaRefLabels] ensureA11yClient: ${Date.now() - startTime}ms`)
 
@@ -1433,10 +1619,18 @@ export async function showAriaRefLabels({
 
     const labelsStart = Date.now()
     const labels = await getLabelBoxesForRefs({ page, refs, logger, cdp })
+    const scrollOffset = await page.evaluate(() => {
+      return { x: window.scrollX, y: window.scrollY }
+    })
     const shortLabels = labels.map((label) => {
       return {
         ...label,
         ref: shortRefMap.get(label.ref) ?? label.ref,
+        box: {
+          ...label.box,
+          x: label.box.x + scrollOffset.x,
+          y: label.box.y + scrollOffset.y,
+        },
       }
     })
     log(`[showAriaRefLabels] getLabelBoxesForRefs: ${Date.now() - labelsStart}ms (${labels.length} boxes)`)
@@ -1525,8 +1719,8 @@ export async function screenshotWithAccessibilityLabels({
   page: Page
   locator?: Locator
   interactiveOnly?: boolean
-  collector: ScreenshotResult[]
-  logger?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void }
+  collector: CollectedScreenshotResult[]
+  logger?: ScreenshotLogger
 }): Promise<void> {
   const log = logger?.info ?? logger?.error
   const showLabelsStart = Date.now()
@@ -1535,79 +1729,52 @@ export async function screenshotWithAccessibilityLabels({
     log(`showAriaRefLabels: ${Date.now() - showLabelsStart}ms`)
   }
 
-  // Generate unique filename with timestamp
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 6)
-  const filename = `playwriter-screenshot-${timestamp}-${random}.jpg`
+  try {
+    const screenshotStart = Date.now()
+    const rawBuffer = await (async () => {
+      if (locator) {
+        return await locator.screenshot({
+          type: 'jpeg',
+          quality: 80,
+          scale: 'css',
+        })
+      }
 
-  // Use ./tmp folder (gitignored) instead of system temp
-  const tmpDir = path.join(process.cwd(), 'tmp')
-  if (!fs.existsSync(tmpDir)) {
-    fs.mkdirSync(tmpDir, { recursive: true })
-  }
-  const screenshotPath = path.join(tmpDir, filename)
+      // Get viewport size to clip screenshot to visible area.
+      // We still clip page screenshots to the visible viewport so labeled
+      // captures stay aligned with what the user can currently see.
+      const viewport = (await page.evaluate('({ width: window.innerWidth, height: window.innerHeight })')) as {
+        width: number
+        height: number
+      }
 
-  // Get viewport size to clip screenshot to visible area
-  const viewport = (await page.evaluate('({ width: window.innerWidth, height: window.innerHeight })')) as {
-    width: number
-    height: number
-  }
+      const sharp = await sharpPromise
+      const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
+      const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
 
-  // Check if sharp is available for resizing
-  const sharp = await sharpPromise
-
-  // Clip dimensions: if sharp unavailable, limit capture area to LLM_MAX_DIMENSION
-  const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
-  const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
-
-  // Take viewport screenshot with scale: 'css' to ignore device pixel ratio
-  const screenshotStart = Date.now()
-  const rawBuffer = await page.screenshot({
-    type: 'jpeg',
-    quality: 80,
-    scale: 'css',
-    clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
-  })
-  if (log) {
-    log(`page.screenshot: ${Date.now() - screenshotStart}ms`)
-  }
-
-  // Resize with resizeImage if sharp available, otherwise use clipped raw buffer
-  const resizeStart = Date.now()
-  const buffer = await (async () => {
-    if (!sharp) {
-      logger?.error?.('[playwriter] sharp not available, using clipped screenshot (max', LLM_MAX_DIMENSION, 'px)')
-      return rawBuffer
+      return await page.screenshot({
+        type: 'jpeg',
+        quality: 80,
+        scale: 'css',
+        clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
+      })
+    })()
+    if (log) {
+      log(`${locator ? 'locator' : 'page'}.screenshot: ${Date.now() - screenshotStart}ms`)
     }
-    try {
-      const result = await resizeImage({ input: rawBuffer })
-      return result.buffer
-    } catch (err) {
-      logger?.error?.('[playwriter] sharp resize failed, using raw buffer:', err)
-      return rawBuffer
-    }
-  })()
-  if (log) {
-    log(`screenshot resize: ${Date.now() - resizeStart}ms`)
+
+    await collectScreenshot({
+      buffer: rawBuffer,
+      mimeType: 'image/jpeg',
+      quality: 80,
+      collector,
+      logger,
+      snapshot,
+      labelCount,
+    })
+  } finally {
+    await hideAriaRefLabels({ page })
   }
-
-  // Save to file
-  fs.writeFileSync(screenshotPath, buffer)
-
-  // Convert to base64
-  const base64 = buffer.toString('base64')
-
-  // Hide labels
-  await hideAriaRefLabels({ page })
-
-  // Add to collector array
-  collector.push({
-    path: screenshotPath,
-    base64,
-    mimeType: 'image/jpeg',
-    snapshot,
-    labelCount,
-  })
 }
 
 // Re-export for backward compatibility

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoReturn, wrapCode } from './executor.js'
+import { formatTimeoutCodePreview, shouldAutoReturn, wrapCode } from './executor.js'
 
 describe('shouldAutoReturn', () => {
   it('returns true for simple expressions', () => {
@@ -133,5 +133,30 @@ describe('wrapCode', () => {
 
   it('wraps assignment expressions without return', () => {
     expect(wrapCode('x = 5')).toBe('(async () => { x = 5 })()')
+  })
+})
+
+describe('formatTimeoutCodePreview', () => {
+  it('collapses multiline code into a single-line preview', () => {
+    expect(
+      formatTimeoutCodePreview({
+        code: `
+          await page.goto('https://example.com')
+          await snapshot({ page })
+        `,
+      }),
+    ).toBe("await page.goto('https://example.com') await snapshot({ page })")
+  })
+
+  it('truncates long code previews with an ellipsis', () => {
+    const preview = formatTimeoutCodePreview({
+      code: 'a'.repeat(30),
+      maxLength: 10,
+    })
+    expect(preview).toBe('aaaaaaaaa…')
+  })
+
+  it('returns an empty string for blank code', () => {
+    expect(formatTimeoutCodePreview({ code: ' \n\t ' })).toBe('')
   })
 })
