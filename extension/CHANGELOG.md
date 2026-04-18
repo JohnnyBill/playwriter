@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.90
+
+### Changes
+
+- **Fixed pinned element outerHTML snippet** using unnecessary dynamic `evaluate` parameter. The pin number is already known at string-build time, so it's now inlined directly instead of passing it as a runtime argument.
+
 ## 0.0.89
 
 ### Changes

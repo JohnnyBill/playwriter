@@ -327,53 +327,17 @@ export function initPlaywriterToolbar(): void {
   }
 
   // Synchronous DOM snapshot for the clipboard summary. Baked into the eval
-  // code via JSON.stringify so pin-click is free of any async/CDP work.
-  function describeElement(el: Element, n: number): string {
-    const tag = el.tagName ? el.tagName.toLowerCase() : ''
-    const id = el.id || ''
-    const cls = typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : ''
-    const role = el.getAttribute('role') || ''
-    const aria = el.getAttribute('aria-label') || ''
-    const nameAttr = el.getAttribute('name') || ''
-    const href = el.getAttribute('href') || ''
-    const typeAttr = el.getAttribute('type') || ''
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300)
-    const r = el.getBoundingClientRect()
-    const rect = `x=${Math.round(r.x)} y=${Math.round(r.y)} w=${Math.round(r.width)} h=${Math.round(r.height)}`
-    const visible = r.width > 0 && r.height > 0
-    const lines: Array<string | false> = [
-      `Pinned #${n} (globalThis.playwriterPinnedElem${n})`,
-      `URL: ${location.href}`,
-      `Tag: ${tag}`,
-      !!id && `ID: ${id}`,
-      !!cls && `Classes: ${cls.slice(0, 200)}`,
-      !!role && `Role: ${role}`,
-      !!aria && `Aria-label: ${aria}`,
-      !!nameAttr && `Name: ${nameAttr}`,
-      !!href && `Href: ${href.slice(0, 200)}`,
-      !!typeAttr && `Type: ${typeAttr}`,
-      !!text && `Text: ${text}`,
-      `Rect: ${rect}`,
-      `Visible: ${visible}`,
-    ]
-    return lines.filter((line): line is string => typeof line === 'string').join('\n')
-  }
-
-  // Two ;-separated statements: pick the page by URL with first-page fallback,
-  // then log the pre-baked summary + live outerHTML of globalThis.playwriterPinnedElem<N>.
-  //
+  // Pick the page by URL with first-page fallback, then log outerHTML of the pinned element.
   // JSON.stringify does NOT escape literal ' characters, so "Don't save"
   // stays "Don't save" in the output. That would break the outer bash '…'
   // wrapper. Replace ' with \u0027 — valid JSON, parses back to ' in the
   // JS engine — so the whole code is single-quote-free and slots safely
   // into the bash 'playwriter -e …' wrapper regardless of element text.
-  function buildInspectionCode(n: number, url: string, summary: string): string {
+  function buildInspectionCode(n: number, url: string): string {
     const URL_LIT = JSON.stringify(url).replace(/'/g, '\\u0027')
-    const SUMMARY_LIT = JSON.stringify(summary).replace(/'/g, '\\u0027')
     return (
       `state.page=context.pages().find(x=>x.url()===${URL_LIT})||context.pages()[0]; ` +
-      `console.log(${SUMMARY_LIT}+"\\n\\nouterHTML:\\n"+` +
-      `await state.page.evaluate(n=>globalThis["playwriterPinnedElem"+n]?.outerHTML,${n}))`
+      `console.log(await state.page.evaluate(()=>globalThis.playwriterPinnedElem${n}?.outerHTML))`
     )
   }
 
@@ -397,8 +361,7 @@ export function initPlaywriterToolbar(): void {
     // runs it. `code` is JSON.stringify'd so it never contains single quotes
     // and slots cleanly into the '…' wrapper.
     const url = location.href
-    const summary = describeElement(target, n)
-    const code = buildInspectionCode(n, url, summary)
+    const code = buildInspectionCode(n, url)
     const clipboardText = "see the element I pinned in the playwriter tab `playwriter -e '" + code + "'`"
     copyText(clipboardText)
     showToast(`Copied pin #${n}`, target.getBoundingClientRect())
