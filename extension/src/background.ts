@@ -2066,6 +2066,7 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
       await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
         expression: jsPinFlashAndCopy,
         awaitPromise: true,
+        userGesture: true,
       })
 
       logger.debug('Pinned element as:', name)
@@ -2102,6 +2103,18 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
           const bippy = globalThis.__bippy;
           if (!bippy) return JSON.stringify({ error: 'bippy not loaded' });
 
+          // bippy.normalizeFileName strips "/app-pages-browser/" but not the parenthesized
+          // form "/(app-pages-browser)/" that Next.js webpack actually uses. This regex
+          // strips all Next.js webpack layer prefixes: (app-pages-browser), (ssr), (rsc),
+          // (action-browser), (pages-dir-browser), (pages-dir-edge), (pages-dir-node).
+          // Also strips leading "./" that often follows the layer prefix.
+          const cleanFileName = (name) => {
+            let f = bippy.normalizeFileName(name);
+            f = f.replace(/^\/?\\([-\\w]+\\)\\//, '');
+            f = f.replace(/^\\.[\\/]/, '');
+            return f;
+          };
+
           let fiber;
           try { fiber = bippy.getFiberFromHostInstance(el); } catch {}
           if (!fiber) return JSON.stringify({ error: 'No React fiber found. Is this a React app?' });
@@ -2114,7 +2127,7 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
                 const source = await bippy.getSource(current);
                 if (source && source.fileName && bippy.isSourceFile(source.fileName)) {
                   return JSON.stringify({
-                    fileName: bippy.normalizeFileName(source.fileName),
+                    fileName: cleanFileName(source.fileName),
                     lineNumber: source.lineNumber || null,
                     columnNumber: source.columnNumber || null,
                     componentName: source.functionName || bippy.getDisplayName(current.type) || null,
@@ -2125,7 +2138,7 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
                 for (const frame of ownerStack) {
                   if (frame.fileName && bippy.isSourceFile(frame.fileName)) {
                     return JSON.stringify({
-                      fileName: bippy.normalizeFileName(frame.fileName),
+                      fileName: cleanFileName(frame.fileName),
                       lineNumber: frame.lineNumber || null,
                       columnNumber: frame.columnNumber || null,
                       componentName: frame.functionName || bippy.getDisplayName(current.type) || null,
@@ -2151,6 +2164,10 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
       }
 
       const parsed = JSON.parse(sourceResult.result?.value || '{}')
+
+      if (!parsed.fileName && !parsed.error) {
+        parsed.error = 'React source result missing fileName'
+      }
 
       if (parsed.error) {
         // Flash red outline on the element to indicate no React source found
@@ -2192,6 +2209,7 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
       await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
         expression: jsFlashGreenAndCopy,
         awaitPromise: true,
+        userGesture: true,
       })
 
       logger.debug('Copied React source path:', clipboardText, 'component:', parsed.componentName)

@@ -128,6 +128,16 @@ export async function getReactSource({
       throw new Error('bippy not loaded')
     }
 
+    // bippy.normalizeFileName strips "/app-pages-browser/" but not the parenthesized
+    // form "/(app-pages-browser)/" that Next.js webpack actually uses. This strips
+    // all webpack layer prefixes like (app-pages-browser), (ssr), (rsc), etc.
+    const cleanName = (name: string): string => {
+      let f = bippy.normalizeFileName(name)
+      f = f.replace(/^\/?\([-\w]+\)\//, '')
+      f = f.replace(/^\.\//, '')
+      return f
+    }
+
     const fiber = bippy.getFiberFromHostInstance(el)
     if (!fiber) {
       return { _notFound: 'fiber' as const }
@@ -136,7 +146,7 @@ export async function getReactSource({
     const source = await bippy.getSource(fiber)
     if (source) {
       return {
-        fileName: source.fileName ? bippy.normalizeFileName(source.fileName) : null,
+        fileName: source.fileName ? cleanName(source.fileName) : null,
         lineNumber: source.lineNumber ?? null,
         columnNumber: source.columnNumber ?? null,
         componentName: source.functionName ?? bippy.getDisplayName(fiber.type) ?? null,
@@ -147,7 +157,7 @@ export async function getReactSource({
     for (const frame of ownerStack) {
       if (frame.fileName && bippy.isSourceFile(frame.fileName)) {
         return {
-          fileName: bippy.normalizeFileName(frame.fileName),
+          fileName: cleanName(frame.fileName),
           lineNumber: frame.lineNumber ?? null,
           columnNumber: frame.columnNumber ?? null,
           componentName: frame.functionName ?? null,
@@ -195,6 +205,16 @@ export async function getReactComponentInfo({
     const bippy = globalThis.__bippy
     if (!bippy) {
       throw new Error('bippy not loaded')
+    }
+
+    // bippy.normalizeFileName strips "/app-pages-browser/" but not the parenthesized
+    // form "/(app-pages-browser)/" that Next.js webpack actually uses. This strips
+    // all webpack layer prefixes like (app-pages-browser), (ssr), (rsc), etc.
+    const cleanName = (name: string): string => {
+      let f = bippy.normalizeFileName(name)
+      f = f.replace(/^\/?\([-\w]+\)\//, '')
+      f = f.replace(/^\.\//, '')
+      return f
     }
 
     const serializeReactValue = (
@@ -268,7 +288,7 @@ export async function getReactComponentInfo({
         const source = await bippy.getSource(fiber)
         if (source?.fileName) {
           return {
-            fileName: bippy.normalizeFileName(source.fileName),
+            fileName: cleanName(source.fileName),
             lineNumber: source.lineNumber ?? null,
             columnNumber: source.columnNumber ?? null,
           }
@@ -280,7 +300,7 @@ export async function getReactComponentInfo({
         })
         if (frame?.fileName) {
           return {
-            fileName: bippy.normalizeFileName(frame.fileName),
+            fileName: cleanName(frame.fileName),
             lineNumber: frame.lineNumber ?? null,
             columnNumber: frame.columnNumber ?? null,
           }
