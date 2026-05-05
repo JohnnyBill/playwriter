@@ -6,6 +6,8 @@ declare const __PLAYWRITER_VERSION__: string
 // in headless/VPS flows where the extension is installed only to attach to the relay.
 declare const __PLAYWRITER_OPEN_WELCOME_PAGE__: boolean
 
+import dedent from 'string-dedent'
+const js = dedent
 import { createStore } from 'zustand/vanilla'
 import type { ExtensionState, ConnectionState, TabState, TabInfo } from './types'
 import { initPlaywriterToolbar } from './toolbar/toolbar'
@@ -14,6 +16,9 @@ import type { ExtensionCommandMessage, ExtensionResponseMessage } from 'playwrit
 import { handleGhostBrowserCommand, type GhostBrowserCommandParams } from 'playwriter/src/ghost-browser'
 // Inlined at build time via vite ?raw. Source: playwriter/src/ghost-cursor-client.ts
 import ghostCursorBundleCode from '../../playwriter/dist/ghost-cursor-client.js?raw'
+// Bippy: React fiber introspection library, used for "Copy React Source Path" context menu.
+// Built by playwriter/scripts/build-client-bundles.ts, exposes globalThis.__bippy
+import bippyBundleCode from '../../playwriter/dist/bippy.js?raw'
 import {
   getActiveRecordings,
   handleStartRecording,
@@ -1255,7 +1260,7 @@ async function attachTab(
       }
     }
 
-    const contextMenuScript = `
+    const contextMenuScript = js`
       document.addEventListener('contextmenu', (e) => {
         window.__playwriter_lastRightClicked = e.target;
       }, true);
@@ -1755,10 +1760,23 @@ chrome.contextMenus
     })
   })
 
+chrome.contextMenus
+  .remove('playwriter-copy-react-source')
+  .catch(() => {})
+  .finally(() => {
+    chrome.contextMenus?.create({
+      id: 'playwriter-copy-react-source',
+      title: 'Copy React Component Source Path',
+      contexts: ['all'],
+      visible: false,
+    })
+  })
+
 function updateContextMenuVisibility(): void {
   const { currentTabId, tabs } = store.getState()
   const isConnected = currentTabId !== undefined && tabs.get(currentTabId)?.state === 'connected'
   chrome.contextMenus?.update('playwriter-pin-element', { visible: isConnected })
+  chrome.contextMenus?.update('playwriter-copy-react-source', { visible: isConnected })
 }
 
 function buildPinnedElementInspectionCode(options: { pinName: string; url: string }): string {
@@ -1985,7 +2003,7 @@ chrome.windows.onCreated.addListener(async (popupWindow) => {
 })
 
 chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId !== 'playwriter-pin-element' || !tab?.id) return
+  if (!tab?.id) return
 
   const tabInfo = store.getState().tabs.get(tab.id)
   if (!tabInfo || tabInfo.state !== 'connected') {
@@ -1995,45 +2013,47 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
 
   const debuggee = { tabId: tab.id }
 
-  try {
-    // Allocate the next pin name by reading and incrementing the shared MAIN-world
-    // counter (window.__playwriterPinCount). This ensures right-click and toolbar
-    // pins never produce conflicting globalThis.playwriterPinnedElemN names.
-    const counterResult = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
-      expression: `
+  if (info.menuItemId === 'playwriter-pin-element') {
+    try {
+      // Allocate the next pin name by reading and incrementing the shared MAIN-world
+      // counter (window.__playwriterPinCount). This ensures right-click and toolbar
+      // pins never produce conflicting globalThis.playwriterPinnedElemN names.
+      const jsAllocatePin = js`
         (function() {
           window.__playwriterPinCount = (window.__playwriterPinCount || 0) + 1;
           return window.__playwriterPinCount;
         })()
-      `,
-      returnByValue: true,
-    })) as { result?: { value?: number }; exceptionDetails?: { text: string } }
+      `
+      const counterResult = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: jsAllocatePin,
+        returnByValue: true,
+      })) as { result?: { value?: number }; exceptionDetails?: { text: string } }
 
-    const count = counterResult.result?.value ?? 1
-    const name = `playwriterPinnedElem${count}`
+      const count = counterResult.result?.value ?? 1
+      const name = `playwriterPinnedElem${count}`
 
-    const result = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
-      expression: `
+      const jsAssignPin = js`
         if (window.__playwriter_lastRightClicked) {
           window.${name} = window.__playwriter_lastRightClicked;
           '${name}';
         } else {
           throw new Error('No element was right-clicked');
         }
-      `,
-      returnByValue: true,
-    })) as { result?: { value?: string }; exceptionDetails?: { text: string } }
+      `
+      const result = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: jsAssignPin,
+        returnByValue: true,
+      })) as { result?: { value?: string }; exceptionDetails?: { text: string } }
 
-    if (result.exceptionDetails) {
-      logger.error('Failed to pin element:', result.exceptionDetails.text)
-      return
-    }
+      if (result.exceptionDetails) {
+        logger.error('Failed to pin element:', result.exceptionDetails.text)
+        return
+      }
 
-    const code = buildPinnedElementInspectionCode({ pinName: name, url: tab.url || '' })
-    const clipboardText = "playwriter -e '" + code + "'"
+      const code = buildPinnedElementInspectionCode({ pinName: name, url: tab.url || '' })
+      const clipboardText = "playwriter -e '" + code + "'"
 
-    await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
-      expression: `
+      const jsPinFlashAndCopy = js`
         (() => {
           const el = window.${name};
           if (!el) return;
@@ -2042,13 +2062,142 @@ chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
           setTimeout(() => el.setAttribute('style', orig), 300);
           return navigator.clipboard.writeText(${JSON.stringify(clipboardText)});
         })()
-      `,
-      awaitPromise: true,
-    })
+      `
+      await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: jsPinFlashAndCopy,
+        awaitPromise: true,
+      })
 
-    logger.debug('Pinned element as:', name)
-  } catch (error: any) {
-    logger.error('Failed to pin element:', error.message)
+      logger.debug('Pinned element as:', name)
+    } catch (error: any) {
+      logger.error('Failed to pin element:', error.message)
+    }
+  }
+
+  if (info.menuItemId === 'playwriter-copy-react-source') {
+    try {
+      // Inject bippy (React fiber introspection) if not already present.
+      // bippy exposes globalThis.__bippy with methods to walk the React fiber tree
+      // and resolve source file locations from React DevTools metadata.
+      const hasBippy = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: '!!globalThis.__bippy',
+        returnByValue: true,
+      })) as { result?: { value?: boolean } }
+
+      if (!hasBippy.result?.value) {
+        await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+          expression: bippyBundleCode,
+        })
+      }
+
+      // Walk from the right-clicked DOM element up through React fiber tree to find
+      // the nearest composite component with source location info. Uses bippy's
+      // getSource() first (direct __source prop from JSX transform), then falls back
+      // to getOwnerStack() for production builds with source maps.
+      const jsResolveSource = js`
+        (async () => {
+          const el = window.__playwriter_lastRightClicked;
+          if (!el) return JSON.stringify({ error: 'No element was right-clicked' });
+
+          const bippy = globalThis.__bippy;
+          if (!bippy) return JSON.stringify({ error: 'bippy not loaded' });
+
+          let fiber;
+          try { fiber = bippy.getFiberFromHostInstance(el); } catch {}
+          if (!fiber) return JSON.stringify({ error: 'No React fiber found. Is this a React app?' });
+
+          // Walk up to find nearest composite fiber with source info
+          let current = fiber;
+          for (let i = 0; i < 50 && current; i++) {
+            try {
+              if (bippy.isCompositeFiber(current)) {
+                const source = await bippy.getSource(current);
+                if (source && source.fileName && bippy.isSourceFile(source.fileName)) {
+                  return JSON.stringify({
+                    fileName: bippy.normalizeFileName(source.fileName),
+                    lineNumber: source.lineNumber || null,
+                    columnNumber: source.columnNumber || null,
+                    componentName: source.functionName || bippy.getDisplayName(current.type) || null,
+                  });
+                }
+                // Try owner stack as fallback for this fiber
+                const ownerStack = await bippy.getOwnerStack(current);
+                for (const frame of ownerStack) {
+                  if (frame.fileName && bippy.isSourceFile(frame.fileName)) {
+                    return JSON.stringify({
+                      fileName: bippy.normalizeFileName(frame.fileName),
+                      lineNumber: frame.lineNumber || null,
+                      columnNumber: frame.columnNumber || null,
+                      componentName: frame.functionName || bippy.getDisplayName(current.type) || null,
+                    });
+                  }
+                }
+              }
+            } catch {}
+            current = current.return;
+          }
+          return JSON.stringify({ error: 'No React source location found. Is this a dev build with source maps?' });
+        })()
+      `
+      const sourceResult = (await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: jsResolveSource,
+        returnByValue: true,
+        awaitPromise: true,
+      })) as { result?: { value?: string }; exceptionDetails?: { text: string } }
+
+      if (sourceResult.exceptionDetails) {
+        logger.error('Failed to get React source:', sourceResult.exceptionDetails.text)
+        return
+      }
+
+      const parsed = JSON.parse(sourceResult.result?.value || '{}')
+
+      if (parsed.error) {
+        // Flash red outline on the element to indicate no React source found
+        const jsFlashRed = js`
+          (() => {
+            const el = window.__playwriter_lastRightClicked;
+            if (!el) return;
+            const orig = el.getAttribute('style') || '';
+            el.setAttribute('style', orig + '; outline: 3px solid #ef4444 !important; outline-offset: 2px !important;');
+            setTimeout(() => el.setAttribute('style', orig), 600);
+          })()
+        `
+        await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+          expression: jsFlashRed,
+        })
+        logger.debug('React source not found:', parsed.error)
+        return
+      }
+
+      // Build clipboard text: "path/to/file.tsx:42" or "path/to/file.tsx" if no line
+      const clipboardText: string = (() => {
+        if (parsed.lineNumber) {
+          return `${parsed.fileName}:${parsed.lineNumber}`
+        }
+        return parsed.fileName
+      })()
+
+      // Flash green outline and copy to clipboard
+      const jsFlashGreenAndCopy = js`
+        (() => {
+          const el = window.__playwriter_lastRightClicked;
+          if (!el) return;
+          const orig = el.getAttribute('style') || '';
+          el.setAttribute('style', orig + '; outline: 3px solid #22c55e !important; outline-offset: 2px !important; box-shadow: 0 0 0 3px #22c55e !important;');
+          setTimeout(() => el.setAttribute('style', orig), 300);
+          return navigator.clipboard.writeText(${JSON.stringify(clipboardText)});
+        })()
+      `
+      await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+        expression: jsFlashGreenAndCopy,
+        awaitPromise: true,
+      })
+
+      logger.debug('Copied React source path:', clipboardText, 'component:', parsed.componentName)
+    } catch (error: any) {
+      logger.error('Failed to copy React source:', error.message)
+    }
   }
 })
 

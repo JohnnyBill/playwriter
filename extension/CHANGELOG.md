@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.93
+
+### Changes
+
+- **New "Copy React Component Source Path" right-click menu item**. When you right-click an element on a React page, this copies the source file path (e.g. `src/components/Button.tsx:42`) to your clipboard. Uses bippy to walk the React fiber tree and resolve source locations. Flashes green on success, red if the element isn't part of a React app or no source maps are available.
+
 ## 0.0.92
 
 ### Changes
