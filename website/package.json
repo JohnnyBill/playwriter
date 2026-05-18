@@ -11,7 +11,7 @@
     "@holocron.so/vite": "^0.8.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "spiceflow": "1.25.1-rsc.0",
+    "spiceflow": "1.25.3-rsc.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
