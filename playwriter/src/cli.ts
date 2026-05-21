@@ -169,15 +169,18 @@ function buildAuthHeaders({ token, json }: { token?: string; json?: boolean }): 
   return headers
 }
 
-async function fetchExtensionsStatus(host?: string): Promise<ExtensionStatus[]> {
+async function fetchExtensionsStatus({ host, token }: { host?: string; token?: string } = {}): Promise<ExtensionStatus[]> {
   try {
     const serverUrl = await getServerUrl(host)
+    const headers = buildAuthHeaders({ token })
     const response = await fetch(`${serverUrl}/extensions/status`, {
       signal: AbortSignal.timeout(2000),
+      headers,
     })
     if (!response.ok) {
       const fallback = await fetch(`${serverUrl}/extension/status`, {
         signal: AbortSignal.timeout(2000),
+        headers,
       })
       if (!fallback.ok) {
         return []
@@ -458,7 +461,7 @@ cli
         })
       }
     } else {
-      extensions = await fetchExtensionsStatus(options.host)
+      extensions = await fetchExtensionsStatus({ host: options.host, token: options.token })
     }
 
     if (extensions.length === 0) {
@@ -929,7 +932,7 @@ cli
     const [extensions, directInstances] = await Promise.all([
       isLocal
         ? waitForConnectedExtensions({ timeoutMs: 2000, pollIntervalMs: 200, logger: console })
-        : fetchExtensionsStatus(options.host),
+        : fetchExtensionsStatus({ host: options.host, token: options.token }),
       isLocal ? discoverChromeInstances() : Promise.resolve([] as DiscoveredInstance[]),
     ])
 
