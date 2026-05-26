@@ -199,6 +199,13 @@ playwriter stream status -s 1
 playwriter stream stop -s 1
 ```
 
+**Scoped screenshot helpers:**
+
+```bash
+playwriter -e "await screenshot({ locator: state.page.locator('main') })"
+playwriter -e "await screenshotWithAccessibilityLabels({ locator: state.page.locator('main') })"
+```
+
 ## MCP Setup
 
 Using the CLI with the skill (step 4 above) is the recommended approach. For direct MCP server configuration, see [MCP.md](./MCP.md).

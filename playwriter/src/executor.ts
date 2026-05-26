@@ -28,10 +28,12 @@ import { getStylesForLocator, formatStylesAsText, type StylesResult } from './st
 import { getReactSource, getReactComponentInfo, type ReactSourceLocation } from './react-source.js'
 import { ScopedFS } from './scoped-fs.js'
 import {
+  screenshot,
   screenshotWithAccessibilityLabels,
   getAriaSnapshot,
   resizeImageForAgent,
   type ScreenshotResult,
+  type TransportedScreenshotResult,
   type SnapshotFormat,
 } from './aria-snapshot.js'
 import { createGhostBrowserChrome, type GhostBrowserCommandResult } from './ghost-browser.js'
@@ -122,7 +124,13 @@ export function resolveSessionCwd(rawCwd: string | undefined): { cwd: string | n
 
 export class CodeExecutionTimeoutError extends Error {
   constructor(timeout: number) {
-    super(`Code execution timed out after ${timeout}ms`)
+    super(
+      `Code execution timed out after ${timeout}ms. ` +
+        'The timed-out operation was not cancelled and may still complete or may already have changed the page. ' +
+        'Inspect the current page state before retrying. ' +
+        `To get Playwright's detailed locator or actionability error, set the action or wait timeout below ${timeout}ms, ` +
+        'or increase the execute timeout.',
+    )
     this.name = 'CodeExecutionTimeoutError'
   }
 }
@@ -334,10 +342,11 @@ const ALLOWED_MODULES = new Set([
 
 export interface ExecuteScreenshot {
   path: string
-  base64: string
-  mimeType: 'image/png'
+  base64?: string
+  mimeType: 'image/png' | 'image/jpeg'
   snapshot: string
   labelCount: number
+  inlineWarning?: string
 }
 
 export interface ExecuteResult {
@@ -1565,6 +1574,7 @@ export class PlaywrightExecutor {
       }
 
       const screenshotCollector: ScreenshotResult[] = []
+      const plainScreenshotCollector: TransportedScreenshotResult[] = []
       // Separate collector for images produced by resizeImageForAgent() calls.
       // These get merged into result.images so the CLI can emit them via Kitty Graphics.
       const resizedImageCollector: Array<{ data: string; mimeType: string }> = []
@@ -1575,10 +1585,53 @@ export class PlaywrightExecutor {
         return result
       }
 
-      const screenshotWithAccessibilityLabelsFn = async (options: { page: Page; interactiveOnly?: boolean }) => {
-        resolveSandboxPage({ helper: 'screenshotWithAccessibilityLabels', page: options?.page })
+      const screenshotFn = async (
+        options:
+          | ({ page: Page; locator?: undefined } & Omit<NonNullable<Parameters<Page['screenshot']>[0]>, 'path'>)
+          | ({ locator: Locator; page?: Page } & Omit<NonNullable<Parameters<Locator['screenshot']>[0]>, 'path'>),
+      ) => {
+        resolveSandboxPage({ helper: 'screenshot', page: options?.page, locator: options?.locator })
+        const result = await screenshot({
+          ...options,
+          logger: {
+            info: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+            error: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+          },
+        })
+        plainScreenshotCollector.push(result)
+        return {
+          path: result.path,
+          mimeType: result.mimeType,
+          ...(result.inlineWarning ? { inlineWarning: result.inlineWarning } : {}),
+        }
+      }
+
+      const screenshotWithAccessibilityLabelsFn = async (
+        options:
+          | {
+              page: Page
+              locator?: Locator
+              interactiveOnly?: boolean
+            }
+          | {
+              locator: Locator
+              page?: Page
+              interactiveOnly?: boolean
+            },
+      ) => {
+        const targetPage = resolveSandboxPage({
+          helper: 'screenshotWithAccessibilityLabels',
+          page: options?.page,
+          locator: options?.locator,
+        })
+
         return screenshotWithAccessibilityLabels({
           ...options,
+          page: targetPage,
           collector: screenshotCollector,
           logger: {
             info: (...args) => {
@@ -1752,6 +1805,7 @@ export class PlaywrightExecutor {
         getReactSource: getReactSourceFn,
         getReactComponentInfo: getReactComponentInfoFn,
         inspectPinnedElement,
+        screenshot: screenshotFn,
         screenshotWithAccessibilityLabels: screenshotWithAccessibilityLabelsFn,
         resizeImageForAgent: resizeImageForAgentFn,
         // Backward-compatible alias for resizeImageForAgent
@@ -1910,6 +1964,13 @@ export class PlaywrightExecutor {
 
       responseText = this.flushOutputForScope(outputScope) + responseText
 
+      for (const plainScreenshot of plainScreenshotCollector) {
+        responseText += `Screenshot saved to: ${plainScreenshot.path}\n`
+        if (plainScreenshot.inlineWarning) {
+          responseText += `${plainScreenshot.inlineWarning}\n`
+        }
+      }
+
       if (!responseText.trim()) {
         responseText = 'Code executed successfully (no output)'
       }
@@ -1923,15 +1984,27 @@ export class PlaywrightExecutor {
       }
 
       const images = [
-        ...screenshotCollector.map((s) => ({ data: s.base64, mimeType: s.mimeType })),
+        ...screenshotCollector.flatMap((s) => {
+          if (!s.base64) {
+            return []
+          }
+          return [{ data: s.base64, mimeType: s.mimeType }]
+        }),
+        ...plainScreenshotCollector.flatMap((s) => {
+          if (!s.base64) {
+            return []
+          }
+          return [{ data: s.base64, mimeType: s.mimeType }]
+        }),
         ...resizedImageCollector,
       ]
       const screenshots: ExecuteScreenshot[] = screenshotCollector.map((s) => ({
         path: s.path,
-        base64: s.base64,
         mimeType: s.mimeType,
         snapshot: s.snapshot,
         labelCount: s.labelCount,
+        ...(s.base64 ? { base64: s.base64 } : {}),
+        ...(s.inlineWarning ? { inlineWarning: s.inlineWarning } : {}),
       }))
 
       return { text: finalText, images, screenshots, isError: false }

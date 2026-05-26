@@ -258,7 +258,9 @@ server.tool(
     timeout: z
       .number()
       .default(DEFAULT_EXEC_TIMEOUT)
-      .describe('Timeout in milliseconds for code execution (default: 10000ms, or PLAYWRITER_EXEC_TIMEOUT)'),
+      .describe(
+        'Hard timeout in milliseconds for code execution (default: PLAYWRITER_EXEC_TIMEOUT or 10000ms). Timed-out Playwright operations are not cancelled and may still change the page. Set action and wait timeouts below this value to receive detailed Playwright errors.',
+      ),
   },
   async ({ code, timeout }) => {
     try {
@@ -279,7 +281,12 @@ server.tool(
       const MAX_TEXT = 10000
       let text = result.text
       for (const s of result.screenshots) {
-        text += `\nScreenshot saved to: ${s.path} (image included below, ${s.labelCount} labels)\n`
+        text += `\nScreenshot saved to: ${s.path}`
+        if (s.inlineWarning) {
+          text += `\n${s.inlineWarning}\n`
+        } else {
+          text += ` (image included below, ${s.labelCount} labels)\n`
+        }
         text += `Accessibility snapshot:\n${s.snapshot}\n`
       }
       if (text.length > MAX_TEXT) {
