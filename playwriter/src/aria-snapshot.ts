@@ -78,10 +78,18 @@ export type AriaSnapshotNode = {
 
 export interface ScreenshotResult {
   path: string
-  base64: string
-  mimeType: 'image/png'
+  base64?: string
+  mimeType: 'image/png' | 'image/jpeg'
   snapshot: string
   labelCount: number
+  inlineWarning?: string
+}
+
+export interface TransportedScreenshotResult {
+  path: string
+  base64?: string
+  mimeType: 'image/png' | 'image/jpeg'
+  inlineWarning?: string
 }
 
 // ============================================================================
@@ -120,6 +128,21 @@ export interface ResizeImageResult {
   /** Only set if output path was provided */
   path?: string
 }
+
+type ScreenshotLogger = { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void }
+
+type PageScreenshotOptions = NonNullable<Parameters<Page['screenshot']>[0]>
+type LocatorScreenshotOptions = NonNullable<Parameters<Locator['screenshot']>[0]>
+
+type ScreenshotTransportOptions =
+  | ({
+      page: Page
+      locator?: undefined
+    } & Omit<PageScreenshotOptions, 'path'>)
+  | ({
+      locator: Locator
+      page?: Page
+    } & Omit<LocatorScreenshotOptions, 'path'>)
 
 /**
  * Resize an image using sharp. Useful for shrinking screenshots before reading
@@ -191,6 +214,143 @@ export async function resizeImageForAgent(options: ResizeImageOptions): Promise<
     mimeType,
     ...(outputPath ? { path: outputPath } : {}),
   }
+}
+
+function ensureScreenshotTmpDir(): string {
+  const tmpDir = path.join(process.cwd(), 'tmp')
+  if (!fs.existsSync(tmpDir)) {
+    fs.mkdirSync(tmpDir, { recursive: true })
+  }
+  return tmpDir
+}
+
+function createScreenshotPath({ mimeType }: { mimeType: 'image/png' | 'image/jpeg' }): string {
+  const timestamp = Date.now()
+  const random = Math.random().toString(36).slice(2, 6)
+  const extension = mimeType === 'image/png' ? 'png' : 'jpg'
+  const filename = `playwriter-screenshot-${timestamp}-${random}.${extension}`
+  return path.join(ensureScreenshotTmpDir(), filename)
+}
+
+async function saveTransportedScreenshot({
+  buffer,
+  mimeType,
+  quality,
+  logger,
+  inlineWhenResizeUnavailable = false,
+}: {
+  buffer: Buffer
+  mimeType: 'image/png' | 'image/jpeg'
+  quality?: number
+  logger?: ScreenshotLogger
+  inlineWhenResizeUnavailable?: boolean
+}): Promise<TransportedScreenshotResult> {
+  const screenshotPath = createScreenshotPath({ mimeType })
+  const sharp = await sharpPromise
+
+  if (!sharp) {
+    logger?.error?.(
+      inlineWhenResizeUnavailable
+        ? '[playwriter] sharp not available, saving unresized screenshot file and inline image'
+        : '[playwriter] sharp not available, saving screenshot file without inline image',
+    )
+    fs.writeFileSync(screenshotPath, buffer)
+    return {
+      path: screenshotPath,
+      mimeType,
+      ...(inlineWhenResizeUnavailable
+        ? { base64: buffer.toString('base64') }
+        : {
+            inlineWarning:
+              'Image content was not inlined because sharp is not available. Open the saved file path instead.',
+          }),
+    }
+  }
+
+  const resizedBuffer = await (async (): Promise<Buffer | null> => {
+    try {
+      const result = await resizeImageForAgent({
+        input: buffer,
+        format: mimeType === 'image/png' ? 'png' : 'jpeg',
+        ...(quality !== undefined ? { quality } : {}),
+      })
+      return result.buffer
+    } catch (error) {
+      logger?.error?.('[playwriter] screenshot resize failed, saving screenshot file without inline image:', error)
+      return null
+    }
+  })()
+
+  if (!resizedBuffer) {
+    fs.writeFileSync(screenshotPath, buffer)
+    return {
+      path: screenshotPath,
+      mimeType,
+      ...(inlineWhenResizeUnavailable
+        ? { base64: buffer.toString('base64') }
+        : {
+            inlineWarning:
+              'Image content was not inlined because resizing failed. Open the saved file path instead.',
+          }),
+    }
+  }
+
+  fs.writeFileSync(screenshotPath, resizedBuffer)
+  return {
+    path: screenshotPath,
+    base64: resizedBuffer.toString('base64'),
+    mimeType,
+  }
+}
+
+/**
+ * Capture a page or locator screenshot, save it under ./tmp, and return inline
+ * image content when resizing support is available.
+ */
+export async function screenshot(
+  options: ScreenshotTransportOptions & { logger?: ScreenshotLogger; inlineWhenResizeUnavailable?: boolean },
+): Promise<TransportedScreenshotResult> {
+  const { logger, inlineWhenResizeUnavailable } = options
+  const screenshotStart = Date.now()
+
+  if ('locator' in options && options.locator) {
+    const {
+      locator,
+      page: _ignoredPage,
+      logger: _ignoredLogger,
+      inlineWhenResizeUnavailable: _ignoredInlineWhenResizeUnavailable,
+      ...locatorOptions
+    } = options
+    const rawBuffer = await locator.screenshot(locatorOptions)
+    logger?.info?.(`locator.screenshot: ${Date.now() - screenshotStart}ms`)
+    const mimeType = locatorOptions.type === 'jpeg' ? 'image/jpeg' : 'image/png'
+    const quality = locatorOptions.type === 'jpeg' ? locatorOptions.quality : undefined
+    return await saveTransportedScreenshot({
+      buffer: rawBuffer,
+      mimeType,
+      quality,
+      logger,
+      inlineWhenResizeUnavailable,
+    })
+  }
+
+  const {
+    page,
+    logger: _ignoredLogger,
+    inlineWhenResizeUnavailable: _ignoredInlineWhenResizeUnavailable,
+    ...pageOptions
+  } = options
+  const rawBuffer = await page.screenshot(pageOptions)
+  logger?.info?.(`page.screenshot: ${Date.now() - screenshotStart}ms`)
+  const mimeType = pageOptions.type === 'jpeg' ? 'image/jpeg' : 'image/png'
+  const quality = pageOptions.type === 'jpeg' ? pageOptions.quality : undefined
+  return await saveTransportedScreenshot({
+    buffer: rawBuffer,
+    mimeType,
+    quality,
+    logger,
+    inlineWhenResizeUnavailable,
+  })
 }
 
 export interface AriaSnapshotResult {
@@ -1504,6 +1664,11 @@ export async function showAriaRefLabels({
   const log = logger?.info ?? logger?.error ?? console.error
 
   log(`[showAriaRefLabels] starting...`)
+  if (locator) {
+    // Scoped label rendering must scroll first so offscreen locators land in
+    // the same viewport used for label placement and the follow-up screenshot.
+    await locator.scrollIntoViewIfNeeded()
+  }
   await ensureA11yClient(page)
   log(`[showAriaRefLabels] ensureA11yClient: ${Date.now() - startTime}ms`)
 
@@ -1528,10 +1693,18 @@ export async function showAriaRefLabels({
 
     const labelsStart = Date.now()
     const labels = await getLabelBoxesForRefs({ page, refs, logger, cdp })
+    const scrollOffset = await page.evaluate(() => {
+      return { x: window.scrollX, y: window.scrollY }
+    })
     const shortLabels = labels.map((label) => {
       return {
         ...label,
         ref: shortRefMap.get(label.ref) ?? label.ref,
+        box: {
+          ...label.box,
+          x: label.box.x + scrollOffset.x,
+          y: label.box.y + scrollOffset.y,
+        },
       }
     })
     log(`[showAriaRefLabels] getLabelBoxesForRefs: ${Date.now() - labelsStart}ms (${labels.length} boxes)`)
@@ -1630,78 +1803,43 @@ export async function screenshotWithAccessibilityLabels({
     log(`showAriaRefLabels: ${Date.now() - showLabelsStart}ms`)
   }
 
-  // Generate unique filename with timestamp
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 6)
-  const filename = `playwriter-screenshot-${timestamp}-${random}.png`
+  try {
+    const screenshotResult = await (async (): Promise<TransportedScreenshotResult> => {
+      if (locator) {
+        return await screenshot({
+          locator,
+          type: 'png',
+          scale: 'css',
+          logger,
+        })
+      }
 
-  // Use ./tmp folder (gitignored) instead of system temp
-  const tmpDir = path.join(process.cwd(), 'tmp')
-  if (!fs.existsSync(tmpDir)) {
-    fs.mkdirSync(tmpDir, { recursive: true })
+      const viewport = (await page.evaluate('({ width: window.innerWidth, height: window.innerHeight })')) as {
+        width: number
+        height: number
+      }
+      const sharp = await sharpPromise
+      const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
+      const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
+
+      return await screenshot({
+        page,
+        type: 'png',
+        scale: 'css',
+        clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
+        inlineWhenResizeUnavailable: true,
+        logger,
+      })
+    })()
+
+    collector.push({
+      ...screenshotResult,
+      snapshot,
+      labelCount,
+    })
+  } finally {
+    await hideAriaRefLabels({ page })
   }
-  const screenshotPath = path.join(tmpDir, filename)
-
-  // Get viewport size to clip screenshot to visible area
-  const viewport = await page.evaluate(() => {
-    return { width: window.innerWidth, height: window.innerHeight }
-  })
-
-  // Check if sharp is available for resizing
-  const sharp = await sharpPromise
-
-  // Clip dimensions: if sharp unavailable, limit capture area to LLM_MAX_DIMENSION
-  const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
-  const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
-
-  // Take viewport screenshot as PNG for Kitty Graphics Protocol compatibility.
-  // PNG is lossless and the only format extracted by kitty-graphics-agent (f=100).
-  const screenshotStart = Date.now()
-  const rawBuffer = await page.screenshot({
-    type: 'png',
-    scale: 'css',
-    clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
-  })
-  if (log) {
-    log(`page.screenshot: ${Date.now() - screenshotStart}ms`)
-  }
-
-  // Resize with resizeImage if sharp available, otherwise use clipped raw buffer
-  const resizeStart = Date.now()
-  const buffer = await (async () => {
-    if (!sharp) {
-      logger?.error?.('[playwriter] sharp not available, using clipped screenshot (max', LLM_MAX_DIMENSION, 'px)')
-      return rawBuffer
-    }
-    try {
-      const result = await resizeImageForAgent({ input: rawBuffer, format: 'png' })
-      return result.buffer
-    } catch (err) {
-      logger?.error?.('[playwriter] sharp resize failed, using raw buffer:', err)
-      return rawBuffer
-    }
-  })()
-  if (log) {
-    log(`screenshot resize: ${Date.now() - resizeStart}ms`)
-  }
-
-  // Save to file
-  fs.writeFileSync(screenshotPath, buffer)
-
-  // Convert to base64
-  const base64 = buffer.toString('base64')
-
-  // Hide labels
-  await hideAriaRefLabels({ page })
-
-  // Add to collector array
-  collector.push({
-    path: screenshotPath,
-    base64,
-    mimeType: 'image/png',
-    snapshot,
-    labelCount,
-  })
 }
 
 // Re-export for backward compatibility

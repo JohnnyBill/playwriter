@@ -306,7 +306,13 @@ async function executeCode(options: {
     const result = (await response.json()) as {
       text: string
       images: Array<{ data: string; mimeType: string }>
-      screenshots: Array<{ path: string; base64: string; snapshot: string; labelCount: number }>
+      screenshots: Array<{
+        path: string
+        base64?: string
+        snapshot: string
+        labelCount: number
+        inlineWarning?: string
+      }>
       isError: boolean
       isCloud?: boolean
     }
@@ -336,6 +342,9 @@ async function executeCode(options: {
           emittedImages.add(s.base64)
         }
         console.log(`\nScreenshot saved to: ${s.path}`)
+        if (s.inlineWarning) {
+          console.log(s.inlineWarning)
+        }
         console.log(`Labels shown: ${s.labelCount}\n`)
         console.log(`Accessibility snapshot:\n${s.snapshot}`)
       }

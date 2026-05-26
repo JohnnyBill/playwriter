@@ -514,6 +514,7 @@ Writing to any other path (e.g. `~/Downloads`, `~/Desktop`) throws `EPERM: opera
 - **CDP sessions**: use `getCDPSession({ page: state.page })` not `state.page.context().newCDPSession()` - NEVER use `newCDPSession()` method, it doesn't work through playwriter relay
 - **Wait for load**: use `state.page.waitForLoadState('domcontentloaded')` not `state.page.waitForEvent('load')` - waitForEvent times out if already loaded
 - **Minimize timeouts**: prefer proper waits (`waitForSelector`, `waitForPageLoad`) over `state.page.waitForTimeout()`. Short timeouts (1-2s) are acceptable for non-deterministic events like animations, tab opens, or async UI updates where no specific selector is available
+- **Treat execution timeouts as an unknown outcome**: the execution timeout cannot cancel an in-flight Playwright operation. A click or other action may already have changed the page even when Playwriter reports a timeout. Inspect the current page state before retrying. To receive Playwright's detailed locator or actionability error, give the action or wait a timeout shorter than the execute timeout
 - **Snapshot before screenshot**: always use `snapshot({ page: state.page })` first to understand page state (text-based, fast, cheap). Only use `screenshot` when you specifically need visual/spatial information. Never take a screenshot just to check if a page loaded or to read text content — snapshot gives you that instantly without burning image tokens
 - **Always use absolute file paths for Playwright artifact APIs**: for `page.screenshot({ path })`, `locator.screenshot({ path })`, `elementHandle.screenshot({ path })`, `page.pdf({ path })`, `download.saveAs(path)`, and `video.saveAs(path)`, always pass an absolute path. Relative paths are resolved by Playwright client internals, not the sandboxed `fs`, so they may use the relay server cwd instead of your session cwd.
 - **Use snapshot() for element discovery, inspect() for layout**: `snapshot({ page: state.page })` shows roles, text, and locators — use it to find elements and check visibility. `inspect()` shows bounding boxes, scroll state, and computed styles — use it when you need layout or scroll info. Do NOT write `page.evaluate()` calls to query class names, bounding boxes, or visibility flags. Reserve `page.evaluate()` for state mutations (e.g., `localStorage.clear()`, `el.scrollTop += 300`) or extracting non-DOM data (e.g., `window.__CONFIG__`)
@@ -1164,17 +1165,32 @@ const matches = await editor.grep({ regex: /console\.log/ })
 await editor.edit({ url: matches[0].url, oldString: 'DEBUG = false', newString: 'DEBUG = true' })
 ```
 
-**screenshotWithAccessibilityLabels** - take a screenshot with Vimium-style visual labels overlaid on interactive elements. Shows labels, captures screenshot, then removes labels. The image and accessibility snapshot are automatically included in the response. Can be called multiple times to capture multiple screenshots. Use a timeout of **20 seconds** for complex pages.
+**Screenshot helpers** - `screenshot()` and `screenshotWithAccessibilityLabels()` both return images directly in the response. Both accept either `{ page: state.page }` or `{ locator: state.page.locator(...) }`. Use plain `screenshot()` for visual context without refs, and `screenshotWithAccessibilityLabels()` when you need clickable visual refs on interactive elements. Use a timeout of **20 seconds** for complex pages.
 
-This is only for **finding interactive elements** on the page. To share a screenshot with the user or save an image, use `page.screenshot()` + `resizeImageForAgent()` instead (see "taking screenshots" section below).
+For layout or design debugging, prefer a scoped locator screenshot or a tight `clip` over a full-page capture. Show the model the smallest region that still contains the issue.
 
-Prefer this for pages with grids, image galleries, maps, or complex visual layouts where spatial position matters. For simple text-heavy pages, `snapshot` with search is faster and uses fewer tokens.
+```js
+await screenshot({ page: state.page, scale: 'css' })
+
+await screenshot({
+  page: state.page,
+  clip: { x: 100, y: 100, width: 400, height: 300 },
+})
+
+await screenshot({ locator: state.page.locator('main') })
+```
+
+Prefer `screenshotWithAccessibilityLabels()` for grids, galleries, maps, and other spatial layouts where you need refs to click. For simple text-heavy pages, `snapshot` with search is faster and uses fewer tokens.
 
 ```js
 await screenshotWithAccessibilityLabels({ page: state.page })
 // Image and accessibility snapshot are automatically included in response
 // Use refs from snapshot to interact with elements
 await state.page.locator('[id="submit-btn"]').click()
+
+await screenshotWithAccessibilityLabels({
+  locator: state.page.locator('main'),
+})
 
 // Can take multiple screenshots in one execution
 await screenshotWithAccessibilityLabels({ page: state.page })
