@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CodeExecutionTimeoutError,
   shouldAutoReturn,
   wrapCode,
   isPlaywrightChannelOwner,
@@ -81,6 +82,19 @@ describe('execute output', () => {
 
   it('returns short output unchanged', () => {
     expect(boundExecuteOutput({ before: 'a\n', after: 'b\n' })).toBe('a\nb\n')
+  })
+})
+
+describe('CodeExecutionTimeoutError', () => {
+  it('warns that timed-out browser operations may have side effects', () => {
+    const error = new CodeExecutionTimeoutError(10000)
+
+    expect(error.message).toContain('timed out after 10000ms')
+    expect(error.message).toContain('was aborted')
+    expect(error.message).toContain('its running and later Playwright calls fail')
+    expect(error.message).toContain('may already have changed the page')
+    expect(error.message).toContain('Inspect the current page state before retrying')
+    expect(error.message).toContain('set the action or wait timeout below 10000ms')
   })
 })
 

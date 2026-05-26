@@ -30,10 +30,12 @@ import { getReactSource, getReactComponentInfo, type ReactSourceLocation } from 
 import { ScopedFS } from './scoped-fs.js'
 import { SANDBOX_FILENAME, describeThrown, runAsFaultOwner } from './process-guard.js'
 import {
+  screenshot,
   screenshotWithAccessibilityLabels,
   getAriaSnapshot,
   resizeImageForAgent,
   type ScreenshotResult,
+  type TransportedScreenshotResult,
   type SnapshotFormat,
 } from './aria-snapshot.js'
 import { createGhostBrowserChrome, type GhostBrowserCommandResult } from './ghost-browser.js'
@@ -127,7 +129,10 @@ export class CodeExecutionTimeoutError extends Error {
   constructor(timeout: number) {
     super(
       `Code execution timed out after ${timeout}ms and was aborted: its running and later Playwright calls fail and \`signal\` is aborted. ` +
-        `Check the page before retrying.`,
+        'An action may already have changed the page. ' +
+        'Inspect the current page state before retrying. ' +
+        `To get Playwright's detailed locator or actionability error, set the action or wait timeout below ${timeout}ms, ` +
+        'or increase the execute timeout.',
     )
     this.name = 'CodeExecutionTimeoutError'
   }
@@ -343,10 +348,11 @@ const ALLOWED_MODULES = new Set([
 
 export interface ExecuteScreenshot {
   path: string
-  base64: string
-  mimeType: 'image/png'
+  base64?: string
+  mimeType: 'image/png' | 'image/jpeg'
   snapshot: string
   labelCount: number
+  inlineWarning?: string
 }
 
 export interface ExecuteResult {
@@ -1859,6 +1865,7 @@ export class PlaywrightExecutor {
       }
 
       const screenshotCollector: ScreenshotResult[] = []
+      const plainScreenshotCollector: TransportedScreenshotResult[] = []
       // Separate collector for images produced by resizeImageForAgent() calls.
       // These get merged into result.images so the CLI can emit them via Kitty Graphics.
       const resizedImageCollector: Array<{ data: string; mimeType: string }> = []
@@ -1869,10 +1876,53 @@ export class PlaywrightExecutor {
         return result
       }
 
-      const screenshotWithAccessibilityLabelsFn = async (options: { page: Page; interactiveOnly?: boolean }): Promise<void> => {
-        const targetPage = resolveSandboxPage({ helper: 'screenshotWithAccessibilityLabels', page: options?.page })
+      const screenshotFn = async (
+        options:
+          | ({ page: Page; locator?: undefined } & Omit<NonNullable<Parameters<Page['screenshot']>[0]>, 'path'>)
+          | ({ locator: Locator; page?: Page } & Omit<NonNullable<Parameters<Locator['screenshot']>[0]>, 'path'>),
+      ) => {
+        resolveSandboxPage({ helper: 'screenshot', page: options?.page, locator: options?.locator })
+        const result = await screenshot({
+          ...options,
+          logger: {
+            info: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+            error: (...args) => {
+              this.logger.error('[playwriter]', ...args)
+            },
+          },
+        })
+        plainScreenshotCollector.push(result)
+        return {
+          path: result.path,
+          mimeType: result.mimeType,
+          ...(result.inlineWarning ? { inlineWarning: result.inlineWarning } : {}),
+        }
+      }
+
+      const screenshotWithAccessibilityLabelsFn = async (
+        options:
+          | {
+              page: Page
+              locator?: Locator
+              interactiveOnly?: boolean
+            }
+          | {
+              locator: Locator
+              page?: Page
+              interactiveOnly?: boolean
+            },
+      ) => {
+        const targetPage = resolveSandboxPage({
+          helper: 'screenshotWithAccessibilityLabels',
+          page: options?.page,
+          locator: options?.locator,
+        })
+
         const { refToLocator } = await screenshotWithAccessibilityLabels({
           ...options,
+          page: targetPage,
           collector: screenshotCollector,
           logger: {
             info: (...args) => {
@@ -2055,6 +2105,7 @@ export class PlaywrightExecutor {
         getReactSource: getReactSourceFn,
         getReactComponentInfo: getReactComponentInfoFn,
         inspectPinnedElement,
+        screenshot: screenshotFn,
         screenshotWithAccessibilityLabels: screenshotWithAccessibilityLabelsFn,
         resizeImageForAgent: resizeImageForAgentFn,
         // Backward-compatible alias for resizeImageForAgent
@@ -2222,6 +2273,13 @@ export class PlaywrightExecutor {
 
       await this.reportBotChallenges({ pages: this.navigatedPages, deadline: challengeDeadline(), signal })
 
+      for (const plainScreenshot of plainScreenshotCollector) {
+        returnText += `Screenshot saved to: ${plainScreenshot.path}\n`
+        if (plainScreenshot.inlineWarning) {
+          returnText += `${plainScreenshot.inlineWarning}\n`
+        }
+      }
+
       const responseText = boundExecuteOutput({
         before: this.flushOutputForScope(outputScope) + formatConsoleLogs({ logs: consoleLogs }),
         after: returnText,
@@ -2229,15 +2287,27 @@ export class PlaywrightExecutor {
       const finalText = responseText.trim() || 'Code executed successfully (no output)'
 
       const images = [
-        ...screenshotCollector.map((s) => ({ data: s.base64, mimeType: s.mimeType })),
+        ...screenshotCollector.flatMap((s) => {
+          if (!s.base64) {
+            return []
+          }
+          return [{ data: s.base64, mimeType: s.mimeType }]
+        }),
+        ...plainScreenshotCollector.flatMap((s) => {
+          if (!s.base64) {
+            return []
+          }
+          return [{ data: s.base64, mimeType: s.mimeType }]
+        }),
         ...resizedImageCollector,
       ]
       const screenshots: ExecuteScreenshot[] = screenshotCollector.map((s) => ({
         path: s.path,
-        base64: s.base64,
         mimeType: s.mimeType,
         snapshot: s.snapshot,
         labelCount: s.labelCount,
+        ...(s.base64 ? { base64: s.base64 } : {}),
+        ...(s.inlineWarning ? { inlineWarning: s.inlineWarning } : {}),
       }))
 
       return { text: finalText, images, screenshots, isError: false }

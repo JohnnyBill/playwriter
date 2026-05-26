@@ -258,6 +258,9 @@ async function executeCode(options: {
           emittedImages.add(s.base64)
         }
         console.log(`\nScreenshot saved to: ${s.path}`)
+        if (s.inlineWarning) {
+          console.log(s.inlineWarning)
+        }
         console.log(`Labels shown: ${s.labelCount}\n`)
         console.log(`Accessibility snapshot:\n${s.snapshot}`)
       }

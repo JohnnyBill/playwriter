@@ -8,6 +8,7 @@ import pc from 'picocolors'
 import { Agent, fetch as undiciFetch } from 'undici'
 import dedent from 'string-dedent'
 import { parseRelayHost } from './utils.js'
+import type { ExecuteScreenshot } from './executor.js'
 import type { TabGroupColor } from './protocol.js'
 import {
   ensureRelayServer,
@@ -769,7 +770,7 @@ export type ExecuteResponse = {
   status: number
   text: string
   images: Array<{ data: string; mimeType: string }>
-  screenshots: Array<{ path: string; base64: string; snapshot: string; labelCount: number }>
+  screenshots: ExecuteScreenshot[]
   isError: boolean
   isCloud?: boolean
 }

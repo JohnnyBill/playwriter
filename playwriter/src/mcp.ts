@@ -255,7 +255,9 @@ server.tool(
     timeout: z
       .number()
       .default(DEFAULT_EXEC_TIMEOUT)
-      .describe('Timeout in milliseconds for code execution (default: 10000ms, or PLAYWRITER_EXEC_TIMEOUT)'),
+      .describe(
+        'Hard timeout in milliseconds for code execution (default: PLAYWRITER_EXEC_TIMEOUT or 10000ms). On timeout, running and later Playwright calls fail; actions may already have changed the page. Set action and wait timeouts below this value to receive detailed Playwright errors.',
+      ),
     session: sessionParam,
   },
   async ({ code, timeout, session }, extra) => {
@@ -278,7 +280,7 @@ server.tool(
       // result.text is already bounded by the relay. Bound only the appended screenshot snapshots.
       const screenshotText = result.screenshots
         .map((s) => {
-          return `\nScreenshot saved to: ${s.path} (image included below, ${s.labelCount} labels)\nAccessibility snapshot:\n${s.snapshot}\n`
+          return `\nScreenshot saved to: ${s.path}${s.inlineWarning ? `\n${s.inlineWarning}` : ` (image included below, ${s.labelCount} labels)`}\nAccessibility snapshot:\n${s.snapshot}\n`
         })
         .join('')
       const content: ToolContent = [{ type: 'text', text: result.text + boundExecuteOutput({ before: '', after: screenshotText }) }]
