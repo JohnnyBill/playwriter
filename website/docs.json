@@ -27,12 +27,14 @@
         {
           "anchor": "GitHub",
           "icon": "github",
-          "href": "https://github.com/remorses/playwriter"
+          "href": "https://github.com/remorses/playwriter",
+          "placement": "tabs"
         },
         {
           "anchor": "Changelog",
           "icon": "lucide:logs",
-          "href": "https://github.com/remorses/playwriter/releases"
+          "href": "https://github.com/remorses/playwriter/releases",
+          "placement": "tabs"
         }
       ]
     }
