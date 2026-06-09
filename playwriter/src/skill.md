@@ -224,7 +224,7 @@ Writing to any other path (e.g. `~/Downloads`, `~/Desktop`) throws `EPERM: opera
 - **No bringToFront**: never call unless user asks - it's disruptive and unnecessary, you can interact with background pages
 - **Check state after actions**: always verify page state after clicking/submitting (see next section)
 - **Clean up listeners**: call `state.page.removeAllListeners()` at end of message to prevent leaks
-- **Use getLatestLogs for browser logs**: do not manually collect `page.on('console')` events just to inspect errors. Manual listeners miss logs emitted before the listener is attached, especially startup and hydration errors. `getLatestLogs({ page: state.page })` returns logs captured from page start, including `pageerror` entries.
+- **Always print page logs after every action**: call `getLatestLogs({ page: state.page, sinceLastCall: true })` after every goto, click, or submit to catch console errors and warnings. Do not manually collect `page.on('console')` events; manual listeners miss logs emitted before the listener is attached. The first `sinceLastCall` call returns all buffered logs including startup and hydration errors.
 - **CDP sessions**: use `getCDPSession({ page: state.page })` not `state.page.context().newCDPSession()` - NEVER use `newCDPSession()` method, it doesn't work through playwriter relay
 - **Wait for load**: use `state.page.waitForLoadState('domcontentloaded')` not `state.page.waitForEvent('load')` - waitForEvent times out if already loaded
 - **Minimize timeouts**: prefer proper waits (`waitForSelector`, `waitForPageLoad`) over `state.page.waitForTimeout()`. Short timeouts (1-2s) are acceptable for non-deterministic events like animations, tab opens, or async UI updates where no specific selector is available
@@ -237,11 +237,13 @@ Writing to any other path (e.g. `~/Downloads`, `~/Desktop`) throws `EPERM: opera
 Every browser interaction must follow **observe → act → observe**. Never chain multiple actions blindly.
 
 1. **Open page** — get or create your page, navigate to URL
-2. **Observe** — print `state.page.url()` + `snapshot()`. Always print URL — pages can redirect unexpectedly.
+2. **Observe** — print `state.page.url()` + `snapshot()` + `getLatestLogs({ sinceLastCall: true })`. Always print URL — pages can redirect unexpectedly.
 3. **Check** — if page isn't ready (loading, wrong URL, content missing), wait and observe again
 4. **Act** — perform one action (click, type, submit)
-5. **Observe again** — print URL + snapshot to verify the action's effect
+5. **Observe again** — print URL + snapshot + page logs to verify the action's effect
 6. **Repeat** from step 3 until task is complete
+
+**Always print page logs after every action** using `getLatestLogs({ sinceLastCall: true })`. This returns only new console messages and errors since the last call, so you catch hydration errors, failed network requests, and runtime exceptions without duplicates. The first call returns all buffered logs from the page, including logs emitted before your script started.
 
 ```js
 // Each step should be a separate execute call:
@@ -249,6 +251,7 @@ Every browser interaction must follow **observe → act → observe**. Never cha
 state.page = context.pages().find((p) => p.url() === 'about:blank') ?? (await context.newPage())
 await state.page.goto('https://example.com', { waitUntil: 'domcontentloaded' })
 console.log('URL:', state.page.url())
+console.log('Page logs:', await getLatestLogs({ page: state.page, sinceLastCall: true }))
 await snapshot({ page: state.page }).then(console.log)
 ```
 
@@ -256,25 +259,26 @@ await snapshot({ page: state.page }).then(console.log)
 // Step 2: act + observe
 await state.page.locator('button:has-text("Submit")').click()
 console.log('URL:', state.page.url())
+console.log('Page logs:', await getLatestLogs({ page: state.page, sinceLastCall: true }))
 await snapshot({ page: state.page }).then(console.log)
 ```
 
 If nothing changed after an action, try `waitForPageLoad({ page: state.page, timeout: 3000 })` or you may have clicked the wrong element.
 
-**Deeper observation** — when snapshots aren't enough to understand what happened, combine multiple channels:
+**Deeper observation** — when snapshots aren't enough to understand what happened, combine snapshot with filtered logs:
 
 ```js
-// Check console for errors after an action
+// Search for specific errors in all logs (not just since last call)
 const errors = await getLatestLogs({ page: state.page, search: /error|fail/i, count: 20 })
 
-// Combine snapshot + logs for full picture
+// Combine snapshot + filtered logs for full picture
 const snap = await snapshot({ page: state.page, search: /dialog|error|message/ })
 const logs = await getLatestLogs({ page: state.page, search: /error/i, count: 10 })
 console.log('UI:', snap)
 console.log('Logs:', logs)
 ```
 
-Use `getLatestLogs()` for console errors, `state.page.url()` for navigation, screenshots only for visual layout issues.
+Use `getLatestLogs({ sinceLastCall: true })` after every action, `getLatestLogs({ search })` for targeted debugging, `state.page.url()` for navigation, screenshots only for visual layout issues.
 
 ## common mistakes to avoid
 
@@ -690,13 +694,17 @@ For carousels or lazy-loaded galleries, you may need to click navigation arrows 
 
 ## utility functions
 
-**getLatestLogs** - retrieve captured browser console logs and page errors (up to 5000 per page, cleared on navigation):
+**getLatestLogs** - retrieve captured browser console logs and page errors (up to 5000 per page):
 
 Always use this helper when inspecting browser logs. Do not attach new `page.on('console')` listeners for debugging because they only see future events and can miss logs emitted during page startup or hydration.
 
+Use `sinceLastCall: true` after every action to get only new logs since the previous call. The first call returns all buffered logs including pre-existing ones. Logs persist across navigations so you never miss errors from page transitions.
+
 ```js
-await getLatestLogs({ page?, count?, search? })
-// Examples:
+await getLatestLogs({ page?, count?, search?, sinceLastCall? })
+// After every action: get only new logs
+const newLogs = await getLatestLogs({ page: state.page, sinceLastCall: true })
+// Search all logs (ignores cursor):
 const errors = await getLatestLogs({ search: /error/i, count: 50 })
 const pageLogs = await getLatestLogs({ page: state.page, count: 100 })
 const hydrationErrors = await getLatestLogs({ page: state.page, search: /hydration|pageerror|React/i })

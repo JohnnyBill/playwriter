@@ -289,6 +289,11 @@ export class PlaywrightExecutor {
 
   private userState: Record<string, any> = {}
   private browserLogs: Map<Page, string[]> = new Map()
+  // Tracks the index up to which getLatestLogs({ sinceLastCall: true }) has
+  // returned logs. 0 means "return everything" (first call gets full buffer).
+  // When addBrowserLog shifts old entries (cap at MAX_LOGS_PER_PAGE), cursors
+  // are decremented so they stay in sync with the array.
+  private pageLogCursor: Map<Page, number> = new Map()
   private lastSnapshots: WeakMap<Page, Map<string, string>> = new WeakMap()
   private lastRefToLocator: WeakMap<Page, Map<string, string>> = new WeakMap()
   private warningEvents: WarningEvent[] = []
@@ -536,14 +541,13 @@ export class PlaywrightExecutor {
       this.browserLogs.set(page, [])
     }
 
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) {
-        this.browserLogs.set(page, [])
-      }
-    })
+    // Logs are NOT cleared on navigation so that getLatestLogs({ sinceLastCall: true })
+    // can return errors from the previous page load. The MAX_LOGS_PER_PAGE cap (5000)
+    // prevents unbounded growth; old entries are shifted out in addBrowserLog.
 
     page.on('close', () => {
       this.browserLogs.delete(page)
+      this.pageLogCursor.delete(page)
     })
 
     page.on('console', (msg) => {
@@ -568,6 +572,12 @@ export class PlaywrightExecutor {
     pageLogs.push(options.logEntry)
     if (pageLogs.length > MAX_LOGS_PER_PAGE) {
       pageLogs.shift()
+      // Decrement cursor so it stays in sync with the shifted array.
+      // Clamp to 0 so the cursor never goes negative.
+      const cursor = this.pageLogCursor.get(options.page)
+      if (cursor !== undefined && cursor > 0) {
+        this.pageLogCursor.set(options.page, cursor - 1)
+      }
     }
   }
 
@@ -999,18 +1009,50 @@ export class PlaywrightExecutor {
         })
       }
 
-      const getLatestLogs = async (options?: { page?: Page; count?: number; search?: string | RegExp }) => {
-        const { page: filterPage, count, search } = options || {}
+      const getLatestLogs = async (options?: {
+        page?: Page
+        count?: number
+        search?: string | RegExp
+        // When true, only return logs added since the last getLatestLogs call
+        // with sinceLastCall: true. First call returns all buffered logs.
+        // Cursors are tracked per page so navigations and new logs are
+        // never missed. Useful for checking page errors after each action.
+        sinceLastCall?: boolean
+      }) => {
+        const { page: filterPage, count, search, sinceLastCall = false } = options || {}
         let allLogs: string[] = []
+
+        // Collect logs, optionally slicing from cursor when sinceLastCall is set
+        const collectLogs = (targetPage: Page): string[] => {
+          const logs = this.browserLogs.get(targetPage) || []
+          if (!sinceLastCall) {
+            return logs
+          }
+          const cursor = this.pageLogCursor.get(targetPage) || 0
+          return logs.slice(cursor)
+        }
 
         if (filterPage) {
           const relatedPages = this.pagesRelatedToPage(filterPage)
           allLogs = relatedPages.flatMap((relatedPage) => {
-            return this.browserLogs.get(relatedPage) || []
+            return collectLogs(relatedPage)
           })
         } else {
-          for (const pageLogs of this.browserLogs.values()) {
-            allLogs.push(...pageLogs)
+          for (const [p] of this.browserLogs) {
+            allLogs.push(...collectLogs(p))
+          }
+        }
+
+        // Advance cursors after collecting so next sinceLastCall call starts fresh
+        if (sinceLastCall) {
+          const pagesToAdvance = filterPage
+            ? this.pagesRelatedToPage(filterPage)
+            : [...this.browserLogs.keys()]
+          for (const p of pagesToAdvance) {
+            const logs = this.browserLogs.get(p)
+            if (logs) {
+              this.pageLogCursor.set(p, logs.length)
+            }
           }
         }
 

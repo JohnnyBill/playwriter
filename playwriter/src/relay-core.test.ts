@@ -771,7 +771,7 @@ describe('Relay Core Tests', () => {
     // With context lines (5 above/below), nearby logs are also included
     expect(errorOutput).toContain('[log] Test log 12345')
 
-    // Test that logs are cleared on page reload
+    // Test that logs persist across page reload
     await client.callTool({
       name: 'execute',
       arguments: {
@@ -814,7 +814,9 @@ describe('Relay Core Tests', () => {
       },
     })
 
-    // Check logs after reload - old logs should be gone
+    // Check logs after reload - old logs persist (no longer cleared on navigation)
+    // so both pre- and post-reload logs are present. Use sinceLastCall to get
+    // only new logs if needed.
     const afterReloadResult = await client.callTool({
       name: 'execute',
       arguments: {
@@ -828,7 +830,7 @@ describe('Relay Core Tests', () => {
 
     const afterReloadOutput = (afterReloadResult as any).content[0].text
     expect(afterReloadOutput).toContain('[log] After reload 88888')
-    expect(afterReloadOutput).not.toContain('[log] Before reload 99999')
+    expect(afterReloadOutput).toContain('[log] Before reload 99999')
 
     // Clean up
     await client.callTool({
@@ -945,7 +947,7 @@ describe('Relay Core Tests', () => {
     expect(allOutput).toContain('[log] PageA log 11111')
     expect(allOutput).toContain('[log] PageB log 33333')
 
-    // Test that reloading page A clears only page A logs
+    // Test that reloading page A preserves logs (no longer cleared on navigation)
     await client.callTool({
       name: 'execute',
       arguments: {
@@ -959,7 +961,7 @@ describe('Relay Core Tests', () => {
       },
     })
 
-    // Check page A logs - should only have new log
+    // Check page A logs - logs persist across navigation, so both old and new are present
     const pageAAfterReloadResult = await client.callTool({
       name: 'execute',
       arguments: {
@@ -973,7 +975,7 @@ describe('Relay Core Tests', () => {
 
     const pageAAfterReloadOutput = (pageAAfterReloadResult as any).content[0].text
     expect(pageAAfterReloadOutput).toContain('[log] PageA after reload 55555')
-    expect(pageAAfterReloadOutput).not.toContain('[log] PageA log 11111')
+    expect(pageAAfterReloadOutput).toContain('[log] PageA log 11111')
 
     // Check page B logs - should still have original logs
     const pageBAfterAReloadResult = await client.callTool({
