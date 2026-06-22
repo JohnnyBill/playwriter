@@ -14,7 +14,7 @@
   "colors": {
     "primary": "#FF9500"
   },
-  "knownPaths": ["/README"],
+  "knownPaths": ["/README", "/api/*", "/login", "/dashboard", "/device"],
   "navigation": {
     "tabs": [
       {
