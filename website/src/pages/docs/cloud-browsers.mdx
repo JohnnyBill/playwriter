@@ -1,0 +1,180 @@
+---
+$schema: https://holocron.so/frontmatter.json
+title: Cloud Browsers
+description: Stealth Chromium browsers with residential proxies and auto CAPTCHA solving. $10 per browser per month, 2 months free on annual plans.
+icon: lucide:cloud
+---
+
+import { CloudHeroSection } from '../../components/hero-section.tsx'
+
+<Above>
+
+<CloudHeroSection />
+
+</Above>
+
+# Cloud Browsers
+
+Run automation on **stealth Chromium instances** hosted in the cloud. Each cloud browser comes with
+**residential proxies**, **automatic CAPTCHA solving**, and **anti-bot fingerprint evasion** built in.
+No setup, no proxy configuration, no CAPTCHA API keys to manage.
+
+Cloud browsers appear alongside your local Chrome in `playwriter session new`, so your existing
+workflows and scripts work without changes.
+
+<Aside>
+<Tip>
+Cloud browsers are a paid add-on. Your local Chrome extension stays **free forever**.
+</Tip>
+</Aside>
+
+## Pricing
+
+<div className="border border-border rounded-xl p-6">
+
+| | **Monthly** | **Yearly** |
+| --- | --- | --- |
+| Per browser | **$10 / month** | **$100 / year** (2 months free) |
+
+</div>
+
+Subscription quantity = max concurrent cloud browsers. Start with 1 and scale up as needed.
+[Subscribe from your dashboard](/dashboard).
+
+<Aside>
+<Note>
+Billing runs on **Stripe**. Update payment method, download invoices, or cancel any time from the portal.
+</Note>
+</Aside>
+
+## Why multiple browsers
+
+Each cloud browser is an **isolated Chromium instance** with its own IP address, fingerprint, and
+cookie jar. Adding more browsers lets you:
+
+- **Run agent tasks in parallel.** Spin up 5 browsers and let 5 agents work simultaneously instead
+  of waiting for one to finish before starting the next.
+- **Use different identities.** Log into separate accounts on the same site at the same time.
+  Useful for testing multi-user flows, managing multiple client accounts, or comparing search
+  results across regions.
+- **Open more tabs for resource-intensive tasks.** Heavy pages (dashboards, SPAs, video players)
+  consume memory and CPU. Spreading tabs across multiple browsers keeps each instance responsive
+  instead of slowing everything down in a single browser.
+
+Your subscription quantity controls how many browsers can run at the same time. If you need 3
+concurrent browsers, set quantity to 3.
+
+## Stealth and anti-detection
+
+Cloud browsers are purpose-built to look like a real user, not a bot.
+
+**Stealth Chromium.** The browser ships with patches that remove common automation signals. Headless
+detection checks, `navigator.webdriver`, CDP leak fingerprints, and other bot indicators are all
+handled. Sites that block Playwright, Puppeteer, or Selenium out of the box work normally in a
+cloud browser.
+
+**Residential proxies.** Proxies are **disabled by default** to keep costs low. Enable them with
+`--proxy <region>` when you need anti-detection or geo-targeting. Pick from **195+ countries**.
+Sites that block datacenter IPs or rate-limit by IP range see a normal residential connection.
+
+**Automatic CAPTCHA solving.** When a CAPTCHA appears (Turnstile, reCAPTCHA v2/v3, hCaptcha), the
+cloud browser solves it automatically via token injection. No CAPTCHA API key needed, no manual
+intervention, no extra code in your scripts.
+
+<Aside>
+<Info>
+CAPTCHA solving works for **Cloudflare Turnstile**, **reCAPTCHA v2**, **reCAPTCHA v3**, and
+**hCaptcha**. Other types are not yet supported.
+</Info>
+</Aside>
+
+**Custom proxies.** If you have your own proxy infrastructure, pass it directly instead of using
+the built-in residential proxies:
+
+```bash
+playwriter session new --browser cloud --custom-proxy user:pass@host:8080
+```
+
+## Getting started
+
+### 1. Authenticate
+
+```bash
+playwriter cloud login
+```
+
+This opens a device flow in your browser. Sign in at [playwriter.dev](https://playwriter.dev) and
+the CLI stores your token locally.
+
+### 2. Subscribe
+
+```bash
+playwriter cloud subscribe
+```
+
+Opens the subscription page where you pick monthly or yearly and set the number of concurrent
+browsers.
+
+### 3. Start a cloud browser
+
+```bash
+# New cloud browser (no proxy, cheapest)
+playwriter session new --browser cloud
+
+# Enable US residential proxy (for anti-detection / geo-targeting)
+playwriter session new --browser cloud --proxy us
+
+# German proxy
+playwriter session new --browser cloud --proxy de
+
+# Japanese proxy
+playwriter session new --browser cloud --proxy jp
+```
+
+Cloud sessions appear in the session table with keys like `cloud-1`, `cloud-2`. Selecting an
+existing cloud session **reattaches** to the running VM instead of creating a new one.
+
+### 4. Use it
+
+Once connected, the cloud browser works exactly like a local one. All Playwright commands,
+snapshots, screenshots, and MCP tools work the same way:
+
+```bash
+playwriter -s 1 -e "await page.goto('https://example.com')"
+playwriter -s 1 -e "console.log(await snapshot({ page }))"
+```
+
+### 5. Check status
+
+```bash
+playwriter cloud status
+```
+
+Lists all active cloud browser VMs with their index, region, and uptime.
+
+<Aside>
+<Note>
+Cloud sessions **auto-stop after 10 minutes of inactivity** so you don't burn resources when
+you're done.
+</Note>
+</Aside>
+
+## MCP and agent usage
+
+Cloud browsers work with the MCP server too. Set env vars in your MCP client config:
+
+```json
+{
+  "env": {
+    "PLAYWRITER_CLOUD_TOKEN": "your-token"
+  }
+}
+```
+
+The MCP server discovers cloud browsers alongside local ones. Agents can request a cloud browser
+when they need stealth browsing, geo-targeted access, or CAPTCHA bypass without any extra prompting.
+
+## Subscribe
+
+Manage your subscription from the [dashboard](/dashboard). Pick monthly or yearly, adjust the
+number of concurrent browsers, and switch or cancel any time through the Stripe billing portal.

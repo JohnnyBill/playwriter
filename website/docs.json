@@ -19,6 +19,7 @@
     "tabs": [
       {
         "tab": "Docs",
+        "icon": "lucide:book",
         "groups": [
           {
             "group": "Getting Started",
@@ -52,6 +53,11 @@
             "pages": ["docs/skill"]
           }
         ]
+      },
+      {
+        "tab": "Cloud Browsers",
+        "icon": "lucide:dollar-sign",
+        "pages": ["docs/cloud-browsers"]
       }
     ],
     "global": {
@@ -72,18 +78,25 @@
     }
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Chrome Extension",
-        "href": "https://chromewebstore.google.com/detail/playwriter/jfeammnjpkecdekppnclgkkffahnhfhe"
-      }
-    ],
     "primary": {
-      "label": "GitHub",
-      "href": "https://github.com/remorses/playwriter"
+      "label": "Cloud Login",
+      "href": "/dashboard"
     }
   },
   "footer": {
+    "links": [
+      {
+        "header": "platform",
+        "items": [
+          { "label": "Rent Cloud Browsers", "href": "/dashboard" },
+          { "label": "GitHub", "href": "https://github.com/remorses/playwriter" },
+          {
+            "label": "Chrome Extension",
+            "href": "https://chromewebstore.google.com/detail/playwriter/jfeammnjpkecdekppnclgkkffahnhfhe"
+          }
+        ]
+      }
+    ],
     "socials": {
       "github": "https://github.com/remorses/playwriter"
     }
