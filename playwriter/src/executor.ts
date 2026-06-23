@@ -442,6 +442,7 @@ export class PlaywrightExecutor {
     const applyToPage = async (page: Page) => {
       try {
         const cdpSession = await page.context().newCDPSession(page)
+        await cdpSession.send('Network.enable')
         await cdpSession.send('Network.setBlockedURLs', {
           urls: blockedPatterns,
         })
