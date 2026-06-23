@@ -185,7 +185,7 @@ export function HeroSection() {
               href={GITHUB_URL}
               target='_blank'
               rel='noopener noreferrer'
-              className='flex items-center gap-2 px-4 py-2 border border-border bg-background hover:bg-muted transition-colors rounded-md font-medium text-xs cursor-pointer no-underline'
+              className='flex items-center gap-2 px-4 py-2 border border-foreground/15 bg-white dark:bg-background hover:border-foreground/25 transition-colors rounded-md font-medium text-xs cursor-pointer no-underline'
             >
               <GithubIcon size={14} />
               GitHub
