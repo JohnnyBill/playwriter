@@ -124,6 +124,7 @@ export const app = new Spiceflow()
     const { SignOutButton } = await import('./components/sign-out-button.tsx')
     const { BillingPanel } = await import('./components/billing-panel.tsx')
     const { ApiKeyPanel } = await import('./components/api-key-panel.tsx')
+    const { QuickStartPanel } = await import('./components/quick-start-panel.tsx')
 
     const { PlaywriterLogo } = await import('./components/auth-page.tsx')
 
@@ -144,7 +145,10 @@ export const app = new Spiceflow()
           </p>
           <p className="text-sm text-muted-foreground mt-1">Organization: {orgInfo.name}</p>
         </div>
-        <BillingPanel subscription={subscription} />
+        <QuickStartPanel />
+        <div className="mt-6">
+          <BillingPanel subscription={subscription} />
+        </div>
         <div className="mt-6">
           <ApiKeyPanel apiKeys={apiKeys} createAction={createApiKey} revokeAction={revokeApiKey} />
         </div>
