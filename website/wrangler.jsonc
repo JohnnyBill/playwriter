@@ -16,6 +16,9 @@
       "migrations_pattern": "../db/drizzle/*/migration.sql"
     }
   ],
+  "routes": [
+    { "pattern": "playwriter.dev/*", "zone_name": "playwriter.dev" }
+  ],
   "secrets": {
     "required": [
       "BETTER_AUTH_SECRET",
@@ -34,6 +37,9 @@
     "preview": {
       "name": "playwriter-website-preview",
       "workers_dev": true,
+      "routes": [
+        { "pattern": "preview.playwriter.dev", "custom_domain": true, "zone_name": "playwriter.dev" }
+      ],
       "d1_databases": [
         {
           "binding": "DB",
