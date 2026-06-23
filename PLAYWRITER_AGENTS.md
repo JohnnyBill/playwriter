@@ -204,6 +204,15 @@ curl -sL https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/mast
 
 you can list other files in that folder on github to read more if you need to control things like DOM, performance, etc
 
+## Browser Use Cloud API docs
+
+cloud browser sessions use the Browser Use hosted Chromium API. before editing cloud browser code (`cloud-client.ts`, `cloud-api.ts`, `browser-use.ts`, or cloud-related CLI commands), read the relevant docs:
+
+- LLM-optimized full docs: https://docs.browser-use.com/cloud/llms-full.txt
+- OpenAPI spec: https://docs.browser-use.com/openapi/v3.json
+
+our typed client lives in `website/src/lib/browser-use.ts` and only uses the `/browsers` endpoints (create, get, stop, list). we do not use the agent/sessions endpoints; we connect via CDP directly.
+
 ## changesets
 
 this repo uses Changesets for public package release notes and version bumps.
