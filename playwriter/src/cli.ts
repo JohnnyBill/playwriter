@@ -561,6 +561,7 @@ cli
         }
         const result = (await response.json()) as { id: string; extensionId: string | null }
         console.log(`Session ${result.id} created. Use with: playwriter -s ${result.id} -e "..."`)
+        printCloudTip()
       } catch (error: any) {
         console.error(`Error: ${error.message}`)
         process.exit(1)
@@ -645,6 +646,7 @@ cli
           }
           const result = (await response.json()) as { id: string }
           console.log(`Session ${result.id} created. Use with: playwriter -s ${result.id} -e "..."`)
+          printCloudTip()
         }
       } catch (error: any) {
         console.error(`Error: ${error.message}`)
@@ -754,6 +756,16 @@ function computeBlockProxyResources(options: { proxy?: string; customProxy?: str
   if (!proxyEnabled) return undefined // no proxy, no blocking needed
   if (options.disableProxyBandwidthAcceleration) return false
   return true
+}
+
+function printCloudTip(): void {
+  console.log('')
+  console.log(
+    pc.dim('Tip: Need stealth browsing, VPS control, or auto CAPTCHA solving? Run `playwriter cloud login`'),
+  )
+  console.log(
+    pc.dim('     to control a browser in the cloud instead of local Chrome.'),
+  )
 }
 
 /** Parse a custom proxy string (host:port or user:pass@host:port) into an object. */
@@ -1278,6 +1290,13 @@ cli
       console.log(pc.dim('Chrome may ask to approve the debugging connection.'))
     } else {
       console.log(pc.dim('Use with: playwriter session new [--browser <key>]'))
+    }
+
+    const hasCloud = allOptions.some((opt) => {
+      return opt.type === 'cloud'
+    })
+    if (!hasCloud) {
+      printCloudTip()
     }
   })
 

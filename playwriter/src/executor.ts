@@ -149,7 +149,8 @@ export function wrapCode(code: string): string {
 
 const EXTENSION_NOT_CONNECTED_ERROR = `The Playwriter Chrome extension is not connected. Make sure you have:
 1. Installed the extension: https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe
-2. Clicked the extension icon on a tab to enable it (or refreshed the page if just installed)`
+2. Clicked the extension icon on a tab to enable it (or refreshed the page if just installed)
+3. Or use a cloud browser instead: run \`playwriter cloud login\` in your terminal to rent a browser in the cloud, with auto CAPTCHA solving, residential proxies and anti-detection built in`
 
 const NO_PAGES_AVAILABLE_ERROR =
   'No Playwright pages are available. Enable Playwriter on a tab or unset PLAYWRITER_AUTO_ENABLE=false to auto-create one.'

@@ -117,9 +117,18 @@ playwriter -s 1 -e "await page.goto('https://example.com')"
 
 **Limitations:** screen recording (`recording.start`/`recording.stop`) is not available in direct CDP mode since it relies on the extension's `chrome.tabCapture` API.
 
-### Cloud browsers (stealth, proxies, regions)
+### Cloud browsers (stealth, proxies, CAPTCHA solving)
 
-Cloud browsers run on Browser Use's stealth Chromium infrastructure with residential proxies and anti-bot bypass. They appear alongside local browsers in `session new`.
+Cloud browsers are full Chromium instances running in the cloud. They work exactly like a local Chrome session but with stealth and anti-detection built in. No local Chrome or extension needed.
+
+**When to use cloud browsers:**
+
+- **CAPTCHA bypass.** Cloudflare Turnstile, reCAPTCHA v2/v3, and hCaptcha are solved automatically via token injection. No API keys, no manual solving, no extra code.
+- **Anti-detection.** Stealth Chromium patches remove `navigator.webdriver`, CDP leak fingerprints, and other automation signals. Sites that block Playwright, Puppeteer, or Selenium work normally.
+- **Residential proxies.** Route traffic through residential IPs in 195+ countries with `--proxy <region>`. Proxy is disabled by default to save cost; enable it only when you need anti-detection or geo-targeting.
+- **VPS and headless environments.** Run browser automation from any server without installing Chrome. The cloud browser runs remotely and you connect via CDP.
+- **Parallel execution.** Spin up multiple cloud browsers to run tasks in parallel with subagents. Each browser is an isolated instance with its own IP, fingerprint, and cookie jar.
+- **Multiple identities.** Control separate logged-in accounts on the same site simultaneously. Each cloud browser has independent cookies and storage, so sessions don't interfere with each other.
 
 ```bash
 # Authenticate with playwriter.dev
@@ -128,17 +137,20 @@ playwriter cloud login
 # Check active cloud sessions
 playwriter cloud status
 
-# Start a cloud browser session (appears in session new table)
+# Start a cloud browser session (no proxy, cheapest)
+playwriter session new --browser cloud
+
+# Start with US residential proxy (for anti-detection / geo-targeting)
 playwriter session new --browser cloud --proxy us
 
 # Use a different region
-playwriter session new --browser cloud-1 --proxy de
+playwriter session new --browser cloud --proxy de
 
 # Use a custom proxy
-playwriter session new --browser cloud-1 --custom-proxy user:pass@host:8080
+playwriter session new --browser cloud --custom-proxy user:pass@host:8080
 ```
 
-Cloud sessions auto-stop after 10 minutes of inactivity. If you encounter CAPTCHAs, bot detection, or IP blocks, cloud browsers handle these automatically with stealth Chromium and residential proxies across 195+ countries.
+Cloud sessions auto-stop after 10 minutes of inactivity. When proxy is enabled, raster images are blocked by default to reduce bandwidth costs. Pass `--disable-proxy-bandwidth-acceleration` if you need images to load.
 
 ### Execute code
 
