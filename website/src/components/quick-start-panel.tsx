@@ -38,10 +38,6 @@ export PLAYWRITER_API_KEY=pw_xxxxx
 playwriter session new --browser cloud --proxy us
 playwriter -s 1 -e "await page.goto('https://example.com')"`}
       </CodeBlock>
-      <p className="text-sm text-muted-foreground">
-        Add <code className="text-xs bg-muted px-1 py-0.5 rounded">--proxy us</code> for residential proxy with anti-detection.
-        Create an API key below for CI and headless environments.
-      </p>
     </div>
   )
 }
@@ -49,13 +45,8 @@ playwriter -s 1 -e "await page.goto('https://example.com')"`}
 function McpContent() {
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-2">
-        <p className="text-sm text-muted-foreground">
-          <strong className="text-foreground">Add to your MCP client config.</strong> The MCP server discovers cloud browsers alongside local ones.
-          Agents can use stealth browsing, geo-targeting, and CAPTCHA bypass without extra prompting.
-        </p>
-        <CodeBlock lang="json" showLineNumbers={false} bleed="none">
-          {`{
+      <CodeBlock lang="json" showLineNumbers={false} bleed="none">
+        {`{
   "mcpServers": {
     "playwriter": {
       "command": "npx",
@@ -66,15 +57,7 @@ function McpContent() {
     }
   }
 }`}
-        </CodeBlock>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <p className="text-sm text-muted-foreground">
-          <strong className="text-foreground">Cloud sessions auto-start</strong> when you set the API key.
-          Ask the agent to use a cloud browser when you need stealth browsing or to bypass bot detection.
-        </p>
-      </div>
+      </CodeBlock>
     </div>
   )
 }
@@ -85,12 +68,7 @@ export function QuickStartPanel() {
   return (
     <div className="flex w-full flex-col gap-4 rounded-xl border border-border bg-background p-6">
       <div className="flex items-center justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-base font-semibold">Quick Start</h2>
-          <p className="text-sm text-muted-foreground">
-            Use cloud browsers from the CLI or through the MCP server.
-          </p>
-        </div>
+        <h2 className="text-base font-semibold">Quick Start</h2>
         <div className="flex items-center gap-1 rounded-lg bg-muted p-1">
           <TabButton active={tab === 'cli'} onClick={() => { setTab('cli') }}>CLI</TabButton>
           <TabButton active={tab === 'mcp'} onClick={() => { setTab('mcp') }}>MCP</TabButton>
@@ -98,13 +76,6 @@ export function QuickStartPanel() {
       </div>
 
       {tab === 'cli' ? <CliContent /> : <McpContent />}
-
-      <a
-        href="https://playwriter.dev/docs/cloud-browsers"
-        className="text-xs text-muted-foreground hover:text-foreground transition-colors self-start"
-      >
-        Full documentation →
-      </a>
     </div>
   )
 }

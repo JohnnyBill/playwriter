@@ -36,7 +36,7 @@ export function BillingPanel({ subscription }: { subscription: BillingSubscripti
           <div className="flex flex-col gap-1">
             <h2 className="text-base font-semibold">Cloud Browsers</h2>
             <div className="text-sm text-muted-foreground">
-              {subscription.quantity} concurrent session{subscription.quantity > 1 ? 's' : ''}
+              {subscription.quantity} browser{subscription.quantity > 1 ? 's' : ''}
               {' · '}
               <span className="capitalize">{subscription.status}</span>
             </div>

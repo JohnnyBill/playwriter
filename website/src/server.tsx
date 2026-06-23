@@ -143,11 +143,11 @@ export const app = new Spiceflow()
           <p className="text-sm text-foreground">
             Signed in as <strong>{session.user.name}</strong> ({session.user.email})
           </p>
-          <p className="text-sm text-muted-foreground mt-1">Organization: {orgInfo.name}</p>
+
         </div>
-        <QuickStartPanel />
+        <BillingPanel subscription={subscription} />
         <div className="mt-6">
-          <BillingPanel subscription={subscription} />
+          <QuickStartPanel />
         </div>
         <div className="mt-6">
           <ApiKeyPanel apiKeys={apiKeys} createAction={createApiKey} revokeAction={revokeApiKey} />
