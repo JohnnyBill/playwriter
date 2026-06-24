@@ -395,20 +395,18 @@ export const cloudApp = new Spiceflow({ basePath: '/api/cloud' })
         )
       }
 
-      // Record creation timestamp for rate limiting, in parallel with VM creation.
-      // Both the VM creation and the timestamp update run concurrently.
+      // Record creation timestamp for rate limiting before creating the VM.
+      // Done sequentially so we have vm.id for cleanup if anything fails.
+      await db.update(schema.org)
+        .set({ lastCloudCreateAt: Date.now(), updatedAt: Date.now() })
+        .where(orm.eq(schema.org.id, org.id))
+
       let vm: BrowserSession
       try {
-        const [vmResult] = await Promise.all([
-          bu.createBrowser({
-            proxyCountryCode: body.proxyRegion ?? null,
-            timeout: body.timeout ?? 30,
-          }),
-          db.update(schema.org)
-            .set({ lastCloudCreateAt: Date.now(), updatedAt: Date.now() })
-            .where(orm.eq(schema.org.id, org.id)),
-        ])
-        vm = vmResult
+        vm = await bu.createBrowser({
+          proxyCountryCode: body.proxyRegion ?? null,
+          timeout: body.timeout ?? 30,
+        })
       } catch (cause) {
         await db.delete(schema.cloudSession)
           .where(orm.eq(schema.cloudSession.id, cloudSession.id))
