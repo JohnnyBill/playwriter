@@ -266,6 +266,9 @@ export interface CdpConfig {
   extensionId?: string | null
   /** Direct CDP WebSocket URL — bypasses relay + extension, connects straight to Chrome */
   directCdpUrl?: string
+  /** Launch a headless Chrome via chromium.launch() instead of connecting to an existing one.
+   *  Uses direct Playwright browser management, no extension or relay CDP routing needed. */
+  headless?: boolean
 }
 
 export interface SessionMetadata {
@@ -771,12 +774,22 @@ export class PlaywrightExecutor {
     return !!this.cdpConfig.directCdpUrl
   }
 
+  private isHeadlessMode(): boolean {
+    return !!this.cdpConfig.headless
+  }
+
   /**
    * Connect to Chrome and set up context/page. Shared by ensureConnection and reset.
+   * In headless mode, launches Chrome via chromium.launch().
    * In direct CDP mode, connects straight to Chrome's WebSocket.
    * In extension mode, checks extension status then connects via relay.
    */
   private async connectToBrowser(): Promise<{ browser: Browser; page: Page; context: BrowserContext }> {
+    // Headless mode: launch Chrome directly via Playwright (no extension, no relay CDP routing)
+    if (this.isHeadlessMode()) {
+      return this.connectHeadlessBrowser()
+    }
+
     if (this.isDirectCdpMode()) {
       // Direct CDP: connect straight to Chrome, no relay or extension needed
       const chromium = await getChromium()
@@ -854,8 +867,108 @@ export class PlaywrightExecutor {
     return { browser, page, context }
   }
 
+  /**
+   * Launch a headless Chrome via chromium.launch(). No extension, no relay CDP routing.
+   * Reuses an existing shared browser if one was already launched for headless mode.
+   * Does NOT add per-session disconnect listeners to avoid accumulation on the shared
+   * browser; instead, ensureConnection checks browser.isConnected() on each call.
+   */
+  private async connectHeadlessBrowser(): Promise<{ browser: Browser; page: Page; context: BrowserContext }> {
+    const browser = await PlaywrightExecutor.getOrLaunchHeadlessBrowser()
+
+    const context = await browser.newContext()
+    context.setDefaultTimeout(60000)
+    context.setDefaultNavigationTimeout(10000)
+
+    context.on('page', (page) => {
+      this.setupPageListeners(page)
+    })
+
+    const page = await context.newPage()
+    this.setupPageListeners(page)
+
+    await this.setDeviceScaleFactorForMacOS(context)
+
+    return { browser, page, context }
+  }
+
+  /** Shared headless browser instance across all headless sessions.
+   *  Uses a launch promise to prevent concurrent first-session races from
+   *  spawning multiple browsers. The disconnect handler is registered once
+   *  at launch time and clears both statics so the next session relaunches. */
+  private static _sharedHeadlessBrowser: Browser | null = null
+  private static _sharedHeadlessBrowserPromise: Promise<Browser> | null = null
+
+  private static async getOrLaunchHeadlessBrowser(): Promise<Browser> {
+    // Check the cached browser is actually alive (not just non-null after a crash)
+    if (PlaywrightExecutor._sharedHeadlessBrowser?.isConnected()) {
+      return PlaywrightExecutor._sharedHeadlessBrowser
+    }
+
+    // Deduplicate concurrent launches: second caller awaits the first's promise
+    if (PlaywrightExecutor._sharedHeadlessBrowserPromise) {
+      return PlaywrightExecutor._sharedHeadlessBrowserPromise
+    }
+
+    const launchPromise = (async () => {
+      const chromium = await getChromium()
+      const { resolveBrowserExecutablePath } = await import('./browser-config.js')
+      const executablePath = resolveBrowserExecutablePath()
+
+      const browser = await chromium.launch({
+        headless: true,
+        executablePath,
+      })
+
+      // Single handler registered once per browser lifetime.
+      // Clears both statics so the next headless session relaunches.
+      browser.on('disconnected', () => {
+        PlaywrightExecutor._sharedHeadlessBrowser = null
+        PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+      })
+
+      PlaywrightExecutor._sharedHeadlessBrowser = browser
+      // Clear the promise now that the browser is cached; future callers
+      // use _sharedHeadlessBrowser directly. Concurrent waiters already
+      // hold a reference to launchPromise so they still resolve correctly.
+      PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+      return browser
+    })()
+
+    PlaywrightExecutor._sharedHeadlessBrowserPromise = launchPromise
+    try {
+      return await launchPromise
+    } catch (error) {
+      PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+      throw error
+    }
+  }
+
+  /** Close the headless context for this session (called on session delete). */
+  async closeHeadlessContext(): Promise<void> {
+    if (!this.isHeadlessMode() || !this.context) {
+      return
+    }
+    await this.context.close().catch((e) => {
+      this.logger.error('Error closing headless context:', e)
+    })
+    this.clearConnectionState()
+  }
+
+  /** Close the shared headless browser (called on relay shutdown). */
+  static async closeSharedHeadlessBrowser(): Promise<void> {
+    if (PlaywrightExecutor._sharedHeadlessBrowser) {
+      await PlaywrightExecutor._sharedHeadlessBrowser.close().catch(() => {})
+      PlaywrightExecutor._sharedHeadlessBrowser = null
+      PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+    }
+  }
+
   private async ensureConnection(): Promise<{ browser: Browser; page: Page }> {
-    if (this.isConnected && this.browser && this.page) {
+    // In headless mode, also check the shared browser is still alive.
+    // After a crash, isConnected() returns false and we need to reconnect.
+    const browserAlive = this.isHeadlessMode() ? this.browser?.isConnected() : true
+    if (this.isConnected && this.browser && this.page && browserAlive) {
       return { browser: this.browser, page: this.page }
     }
 
@@ -905,15 +1018,23 @@ export class PlaywrightExecutor {
   }
 
   async reset(): Promise<{ page: Page; context: BrowserContext }> {
-    if (this.browser) {
-      this.suppressPageCloseWarnings = true
-      try {
+    this.suppressPageCloseWarnings = true
+    try {
+      if (this.isHeadlessMode()) {
+        // In headless mode, only close this session's context, not the shared browser.
+        // Other headless sessions share the same browser instance.
+        if (this.context) {
+          await this.context.close().catch((e) => {
+            this.logger.error('Error closing context:', e)
+          })
+        }
+      } else if (this.browser) {
         await this.browser.close()
-      } catch (e) {
-        this.logger.error('Error closing browser:', e)
-      } finally {
-        this.suppressPageCloseWarnings = false
       }
+    } catch (e) {
+      this.logger.error('Error closing browser:', e)
+    } finally {
+      this.suppressPageCloseWarnings = false
     }
 
     this.clearConnectionState()

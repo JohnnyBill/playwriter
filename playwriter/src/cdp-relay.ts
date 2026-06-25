@@ -1993,6 +1993,8 @@ export async function startPlayWriterCDPRelayServer({
       cwd?: string
       /** Direct CDP WebSocket URL — bypasses extension, connects straight to Chrome */
       cdpEndpoint?: string
+      /** Launch a headless Chrome via chromium.launch() — no extension or relay CDP routing */
+      headless?: boolean
       /** Browser name from discovery (e.g. "Chrome", "Brave") */
       browser?: string
       /** Profile info from discovery */
@@ -2010,6 +2012,37 @@ export async function startPlayWriterCDPRelayServer({
     }
     const sessionId = String(nextSessionNumber++)
     const cwd = body.cwd
+
+    // Headless mode: launch Chrome via chromium.launch(), no extension needed.
+    // Force connection immediately so missing Chrome errors surface at creation time,
+    // not on first execute call.
+    if (body.headless) {
+      const manager = await getExecutorManager()
+      const executor = manager.getExecutor({
+        sessionId,
+        cwd,
+        cdpConfig: { headless: true },
+        sessionMetadata: {
+          extensionId: null,
+          browser: 'Chrome (Headless)',
+          profile: null,
+        },
+      })
+      try {
+        await executor.reset()
+      } catch (error) {
+        manager.deleteExecutor(sessionId)
+        return c.json({ error: error instanceof Error ? error.message : String(error) }, 500)
+      }
+      const metadata = executor.getSessionMetadata()
+      return c.json({
+        id: sessionId,
+        mode: 'headless' as const,
+        extensionId: metadata.extensionId,
+        browser: metadata.browser,
+        profile: metadata.profile,
+      })
+    }
 
     // Direct CDP mode: skip extension lookup, pass direct WebSocket URL to executor
     if (body.cdpEndpoint) {
@@ -2107,6 +2140,14 @@ export async function startPlayWriterCDPRelayServer({
       }
 
       const manager = await getExecutorManager()
+      const executor = manager.getSession(sessionId)
+
+      // Close headless context before deleting to prevent context/page leaks
+      // on the shared headless browser. Only affects headless sessions.
+      if (executor) {
+        await executor.closeHeadlessContext()
+      }
+
       const deleted = manager.deleteExecutor(sessionId)
 
       if (!deleted) {
@@ -2422,6 +2463,11 @@ export async function startPlayWriterCDPRelayServer({
         }
         ext.ws?.close(1000, 'Server stopped')
       }
+
+      // Close shared headless browser if any headless sessions were created (fire-and-forget)
+      void import('./executor.js').then(({ PlaywrightExecutor }) => {
+        return PlaywrightExecutor.closeSharedHeadlessBrowser()
+      })
 
       // Reset store state
       store.setState({

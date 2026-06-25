@@ -117,6 +117,26 @@ playwriter -s 1 -e "await page.goto('https://example.com')"
 
 **Limitations:** screen recording (`recording.start`/`recording.stop`) is not available in direct CDP mode since it relies on the extension's `chrome.tabCapture` API.
 
+### Headless browser (no extension, no user browser)
+
+Launch a headless Chrome automatically. No extension setup, no user browser involvement. Useful when the user doesn't want their personal browser used, in CI/server environments, or for fully autonomous automation.
+
+```bash
+# Install Chrome for Testing (first time only, if no Chrome is available)
+playwriter browser install
+
+# Launch headless Chrome and create a session
+playwriter session new --browser headless
+
+# Use the session normally
+playwriter -s 1 -e "await page.goto('https://example.com')"
+playwriter -s 1 -e "console.log(await snapshot({ page }))"
+```
+
+Multiple sessions reuse the same headless Chrome process. Recording is not available in headless mode.
+
+If no Chrome binary is found, `playwriter session new --browser headless` will tell you to run `playwriter browser install` first to download Chrome for Testing.
+
 ### Cloud browsers (stealth, proxies, CAPTCHA solving)
 
 Cloud browsers are full Chromium instances running in the cloud. They work exactly like a local Chrome session but with stealth and anti-detection built in. No local Chrome or extension needed.

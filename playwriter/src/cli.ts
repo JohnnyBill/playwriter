@@ -99,6 +99,18 @@ cli
   )
 
 cli
+  .command('browser install', 'Download Chrome for Testing for headless browser automation')
+  .action(async () => {
+    try {
+      const { installChrome } = await import('./browser-install.js')
+      await installChrome()
+    } catch (error: any) {
+      console.error(`Error: ${error.message}`)
+      process.exit(1)
+    }
+  })
+
+cli
   .command('', 'Start the MCP server or controls the browser with -e')
   .option('--host <host>', 'Remote relay server host to connect to (or use PLAYWRITER_HOST env var)')
   .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
@@ -349,7 +361,7 @@ async function executeCode(options: {
 // Unified browser option type used in the multi-browser selection table
 interface BrowserOption {
   key: string
-  type: 'extension' | 'direct' | 'cloud'
+  type: 'extension' | 'direct' | 'cloud' | 'headless'
   browser: string
   profile: string
   /** For extension entries */
@@ -366,7 +378,7 @@ cli
   .command('session new', 'Create a new session and print the session ID')
   .option('--host <host>', 'Remote relay server host')
   .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
-  .option('--browser <key>', 'Browser key when multiple browsers are available')
+  .option('--browser <key>', 'Browser key when multiple browsers are available. Special values: "headless" (launch headless Chrome, no extension), "cloud" (cloud browser with stealth/proxies)')
   .option('--patchright', 'Use @playwriter/patchright-core for stealth mode (bypasses bot detection)')
   .option('--direct [endpoint]', 'Use direct CDP connection without the extension. Enable debugging first at chrome://inspect/#remote-debugging or launch Chrome with --remote-debugging-port=9222. Auto-discovers instances or accepts an explicit ws:// endpoint')
   .option('--proxy <region>', 'Enable residential proxy for cloud browser (e.g. us, de, jp). Disabled by default. Use for anti-detection or geo-targeting.')
@@ -379,6 +391,47 @@ cli
     }
 
     const isLocal = !options.host && !process.env.PLAYWRITER_HOST
+
+    // --browser headless: launch headless Chrome via chromium.launch(), no extension
+    if (options.browser === 'headless') {
+      try {
+        await ensureRelayForSessionCreation(isLocal)
+        const serverUrl = await getServerUrl(options.host)
+        const response = await fetch(`${serverUrl}/cli/session/new`, {
+          method: 'POST',
+          headers: buildAuthHeaders({ token: options.token, json: true }),
+          body: JSON.stringify({ headless: true, cwd: process.cwd() }),
+        })
+        if (!response.ok) {
+          const text = await response.text()
+          if (text.includes('Could not find a supported browser binary')) {
+            console.error('No Chrome browser found. Install one first:')
+            console.error('')
+            console.error('  playwriter browser install')
+            console.error('')
+            console.error('This downloads Chrome for Testing from Google.')
+            process.exit(1)
+          }
+          console.error(`Error: ${response.status} ${text}`)
+          process.exit(1)
+        }
+        const result = (await response.json()) as { id: string }
+        console.log(`Session ${result.id} created (headless). Use with: playwriter -s ${result.id} -e "..."`)
+        console.log(pc.dim('NOTE: Recording unavailable in headless mode.'))
+      } catch (error: any) {
+        if (error.message?.includes('Could not find a supported browser binary')) {
+          console.error('No Chrome browser found. Install one first:')
+          console.error('')
+          console.error('  playwriter browser install')
+          console.error('')
+          console.error('This downloads Chrome for Testing from Google.')
+          process.exit(1)
+        }
+        console.error(`Error: ${error.message}`)
+        process.exit(1)
+      }
+      return
+    }
     // goke 6.6: optional-value flags are string | undefined
     //   `--direct ws://...` → 'ws://...' (explicit endpoint)
     //   `--direct`          → ''          (bare flag, auto-discover)
@@ -1313,6 +1366,22 @@ cli
 
     const cloudOptions = await discoverCloudBrowsers()
 
+    // Check if a Chrome binary is available for headless mode
+    const headlessOption: BrowserOption[] = await (async () => {
+      try {
+        const { resolveBrowserExecutablePath } = await import('./browser-config.js')
+        resolveBrowserExecutablePath()
+        return [{
+          key: 'headless',
+          type: 'headless' as const,
+          browser: 'Chrome (Headless)',
+          profile: '-',
+        }]
+      } catch {
+        return []
+      }
+    })()
+
     const allOptions: BrowserOption[] = [
       ...extensions.map((ext) => {
         return {
@@ -1324,6 +1393,7 @@ cli
         }
       }),
       ...directInstances.map(instanceToBrowserOption),
+      ...headlessOption,
       ...cloudOptions,
     ]
 
@@ -1331,6 +1401,7 @@ cli
       console.log('No browsers detected.\n')
       console.log('  Extension: click the Playwriter icon on a tab to connect')
       console.log('  Direct:    open chrome://inspect/#remote-debugging in Chrome')
+      console.log('  Headless:  run `playwriter browser install` then `--browser headless`')
       console.log('  Cloud:     run `playwriter cloud login` to connect cloud browsers')
       return
     }

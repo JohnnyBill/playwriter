@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { chromium } from '@xmorse/playwright-core'
+import { findInstalledChrome } from './browser-install.js'
 // NOTE: browser-config uses chromium synchronously (executablePath) during browser start.
 // Patchright mode only affects connectOverCDP in executor.ts, not browser binary lookup.
 
@@ -137,6 +138,12 @@ export function resolveBrowserExecutablePath({
     return resolvedEnvPath
   }
 
+  // Check Chrome downloaded by `playwriter install` first (highest priority)
+  const installedChrome = findInstalledChrome()
+  if (installedChrome) {
+    return installedChrome
+  }
+
   const candidates = getBrowserExecutableCandidates({ platform, env, homeDir })
   const resolvedPath = candidates.find((candidate) => {
     return existsSync(candidate)
@@ -151,8 +158,8 @@ export function resolveBrowserExecutablePath({
   })
 
   throw new Error(
-    'Could not find a supported browser binary. Install Chrome for Testing or Chromium, or pass a binary path to `playwriter browser start`.' +
-      `\n\nSearched paths:\n${searchedPathsText.join('\n')}`,
+    'Could not find a supported browser binary. Run `playwriter browser install` to download Chrome for Testing, or pass a binary path.' +
+      `\n\nSearched paths:\n- ~/.playwriter/browsers/ (playwriter browser install)\n${searchedPathsText.join('\n')}`,
   )
 }
 
