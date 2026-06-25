@@ -208,6 +208,32 @@ export function HeroSection() {
   )
 }
 
+export function ChangelogHeroSection() {
+  return (
+    <div className='relative z-0 mt-2 lg:mt-4 mb-4 lg:mb-6 w-screen ml-[calc(-50vw+50%)] flex flex-col items-center overflow-hidden'>
+      <HeroBackground dotColor='rgba(100, 140, 255, 0.7)' />
+
+      <div className='relative z-[2] flex flex-col items-center justify-center px-6 pt-20 sm:pt-28 pb-20 sm:pb-28'>
+        <div className='flex flex-col items-center text-center'>
+          <img
+            src='/playwriter-logo.svg'
+            alt='Playwriter'
+            className='h-8 mb-5 dark:invert'
+          />
+          <h1 className='flex flex-col items-center leading-tight'>
+            <span
+              className='text-[28px] sm:text-[36px] md:text-[44px] text-foreground'
+              style={{ fontFamily: HERO_FONT }}
+            >
+              changelog
+            </span>
+          </h1>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function CloudHeroSection() {
   return (
     <div className='relative mt-2 lg:mt-4 mb-4 lg:mb-6 w-screen ml-[calc(-50vw+50%)] flex flex-col items-center overflow-hidden'>
