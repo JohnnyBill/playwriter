@@ -889,6 +889,7 @@ export class PlaywrightExecutor {
 
     await this.setDeviceScaleFactorForMacOS(context)
 
+    PlaywrightExecutor._headlessExecutors.add(this)
     return { browser, page, context }
   }
 
@@ -898,6 +899,11 @@ export class PlaywrightExecutor {
    *  at launch time and clears both statics so the next session relaunches. */
   private static _sharedHeadlessBrowser: Browser | null = null
   private static _sharedHeadlessBrowserPromise: Promise<Browser> | null = null
+  /** Active headless executors sharing the browser. Using a Set instead of a
+   *  counter makes tracking idempotent: reset() re-adds the same executor (no-op),
+   *  and concurrent deletes can't double-decrement. When the set empties after
+   *  a session delete, the shared browser is auto-closed. */
+  private static _headlessExecutors = new Set<PlaywrightExecutor>()
 
   private static async getOrLaunchHeadlessBrowser(): Promise<Browser> {
     // Check the cached browser is actually alive (not just non-null after a crash)
@@ -925,6 +931,7 @@ export class PlaywrightExecutor {
       browser.on('disconnected', () => {
         PlaywrightExecutor._sharedHeadlessBrowser = null
         PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+        PlaywrightExecutor._headlessExecutors.clear()
       })
 
       PlaywrightExecutor._sharedHeadlessBrowser = browser
@@ -944,15 +951,26 @@ export class PlaywrightExecutor {
     }
   }
 
-  /** Close the headless context for this session (called on session delete). */
+  /** Close the headless context for this session (called on session delete).
+   *  When the last headless executor is removed, the shared browser is also
+   *  closed automatically so the Chrome process doesn't linger. */
   async closeHeadlessContext(): Promise<void> {
-    if (!this.isHeadlessMode() || !this.context) {
+    if (!this.isHeadlessMode()) {
       return
     }
-    await this.context.close().catch((e) => {
-      this.logger.error('Error closing headless context:', e)
-    })
+    const context = this.context
     this.clearConnectionState()
+
+    if (context) {
+      await context.close().catch((e) => {
+        this.logger.error('Error closing headless context:', e)
+      })
+    }
+
+    const wasTracked = PlaywrightExecutor._headlessExecutors.delete(this)
+    if (wasTracked && PlaywrightExecutor._headlessExecutors.size === 0) {
+      await PlaywrightExecutor.closeSharedHeadlessBrowser()
+    }
   }
 
   /** Close the shared headless browser (called on relay shutdown). */
