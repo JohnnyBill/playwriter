@@ -877,20 +877,27 @@ export class PlaywrightExecutor {
     const browser = await PlaywrightExecutor.getOrLaunchHeadlessBrowser()
 
     const context = await browser.newContext()
-    context.setDefaultTimeout(60000)
-    context.setDefaultNavigationTimeout(10000)
+    try {
+      context.setDefaultTimeout(60000)
+      context.setDefaultNavigationTimeout(10000)
 
-    context.on('page', (page) => {
+      context.on('page', (page) => {
+        this.setupPageListeners(page)
+      })
+
+      const page = await context.newPage()
       this.setupPageListeners(page)
-    })
 
-    const page = await context.newPage()
-    this.setupPageListeners(page)
+      await this.setDeviceScaleFactorForMacOS(context)
 
-    await this.setDeviceScaleFactorForMacOS(context)
-
-    PlaywrightExecutor._headlessExecutors.add(this)
-    return { browser, page, context }
+      PlaywrightExecutor._headlessExecutors.add(this)
+      return { browser, page, context }
+    } catch (e) {
+      // Clean up the partially created context so it doesn't leak on the
+      // long-lived shared browser.
+      await context.close().catch(() => {})
+      throw e
+    }
   }
 
   /** Shared headless browser instance across all headless sessions.
@@ -927,8 +934,13 @@ export class PlaywrightExecutor {
       })
 
       // Single handler registered once per browser lifetime.
-      // Clears both statics so the next headless session relaunches.
+      // Only clears statics if this is still the current shared browser;
+      // prevents an old browser's disconnect from wiping state for a newer one
+      // (race: new session launches while old browser.close() is in progress).
       browser.on('disconnected', () => {
+        if (PlaywrightExecutor._sharedHeadlessBrowser !== browser) {
+          return
+        }
         PlaywrightExecutor._sharedHeadlessBrowser = null
         PlaywrightExecutor._sharedHeadlessBrowserPromise = null
         PlaywrightExecutor._headlessExecutors.clear()
@@ -973,12 +985,18 @@ export class PlaywrightExecutor {
     }
   }
 
-  /** Close the shared headless browser (called on relay shutdown). */
+  /** Close the shared headless browser (called on relay shutdown or when last
+   *  session is deleted). Nulls statics before awaiting close so concurrent
+   *  callers of getOrLaunchHeadlessBrowser() launch a fresh browser instead
+   *  of reusing one that is mid-shutdown. */
   static async closeSharedHeadlessBrowser(): Promise<void> {
-    if (PlaywrightExecutor._sharedHeadlessBrowser) {
-      await PlaywrightExecutor._sharedHeadlessBrowser.close().catch(() => {})
+    const browser = PlaywrightExecutor._sharedHeadlessBrowser
+    if (browser) {
+      // Detach from statics first so new sessions don't reuse a dying browser.
+      // The disconnect handler checks identity, so it becomes a no-op for this browser.
       PlaywrightExecutor._sharedHeadlessBrowser = null
       PlaywrightExecutor._sharedHeadlessBrowserPromise = null
+      await browser.close().catch(() => {})
     }
   }
 
