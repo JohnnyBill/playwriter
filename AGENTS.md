@@ -230,6 +230,8 @@ this repo uses Changesets for public package release notes and version bumps.
 
 For every fix or feature that affects a public package, add one `.changeset/*.md` file at the repo root. Do not edit package CHANGELOG.md files directly and do not manually bump public package versions; changesets are consumed at publish time to update versions and changelogs.
 
+**Always add a changeset before committing** any fix or feature that touches a public package. The changeset must be included in the same commit as the code change, not added later.
+
 Use `patch` for fixes and `minor` for new features. Include every affected public package in the changeset frontmatter, for example `playwriter` or `@xmorse/playwright-core`. Skip private packages such as `mcp-extension`.
 
 Before adding a changeset, run `gh issue list --state all --limit 20` and reference a matching issue with `Fixes #123` on its own line when the change fixes one.
