@@ -159,9 +159,17 @@
         color: var(--color-link);
         font-weight: 700;
         font-size: 1.125rem;
-        margin-right: 0.75rem;
+        font-variant-numeric: tabular-nums;
+        width: 1.75rem;
         flex-shrink: 0;
         line-height: 1.6;
+      }
+
+      /* hang numbers in the left margin so step text lines up with the heading */
+      @media (min-width: 720px) {
+        .step-number {
+          margin-left: -1.75rem;
+        }
       }
 
       .step {
@@ -409,10 +417,9 @@ Then use Playwriter to open a new tab and navigate to the GitHub project at http
             <span class="step-number">3</span>
             <div class="step-content">
               <strong>Install the CLI and run a command</strong>
-              <pre><code class="language-bash"># install the CLI globally
-npm i -g playwriter
-# open a new tab and navigate to a URL
-playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto('https://example.com')"</code></pre>
+              <pre><code class="language-bash">npm i -g playwriter
+playwriter session new
+playwriter -e "state.page = await context.newPage()"</code></pre>
             </div>
           </div>
 
@@ -428,14 +435,13 @@ npx -y skills add https://playwriter.dev</code></pre>
 
           <h3>CLI Examples</h3>
 
-          <pre><code class="language-bash"># create a stateful sandbox, outputs session id (e.g. 1)
-playwriter session new
-# open a new tab and navigate to a URL
-playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto('https://example.com')"
-# get the accessibility tree of the page
-playwriter -s 1 -e "console.log(await snapshot({ page: state.page }))"
-# click an element by its accessibility reference
-playwriter -s 1 -e "await state.page.locator('aria-ref=e5').click()"</code></pre>
+          <pre><code class="language-bash"># open a tab and go to a URL
+playwriter -e "state.page = await context.newPage()"
+playwriter -e "await state.page.goto('https://example.com')"
+# print the accessibility tree
+playwriter -e "console.log(await snapshot({ page: state.page }))"
+# click a link
+playwriter -e "await state.page.getByRole('link').first().click()"</code></pre>
         </section>
 
         <section>
