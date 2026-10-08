@@ -109,7 +109,7 @@ export function initPlaywriterToolbar(): void {
       display: flex;
       align-items: center;
       gap: 2px;
-      padding: 3px 7px;
+      padding: 2px 4px;
       background: #1c1c1c;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 9999px;
@@ -130,11 +130,13 @@ export function initPlaywriterToolbar(): void {
       }
     }
     .separator {
-      width: 1px;
+      width: 0;
       height: 15px;
       background: rgba(255,255,255,0.15);
-      margin: 0 2px;
+      margin: 0;
       flex-shrink: 0;
+      opacity: 0;
+      transition: width 200ms cubic-bezier(0.23, 1, 0.32, 1), margin 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .btn {
       display: flex;
@@ -154,7 +156,6 @@ export function initPlaywriterToolbar(): void {
     }
     .btn.labeled {
       width: auto;
-      gap: 6px;
       padding: 0 7px;
       font-size: 12px;
       font-weight: 500;
@@ -199,7 +200,6 @@ export function initPlaywriterToolbar(): void {
     .record-btn {
       display: flex;
       align-items: center;
-      gap: 4px;
       border: none;
       border-radius: 7px;
       background: transparent;
@@ -238,7 +238,39 @@ export function initPlaywriterToolbar(): void {
       background: rgba(125,211,252,0.18);
       color: #bae6fd;
     }
+    /* Icons only by default. Labels expand on hover; interpolate-size lets width animate to auto. */
+    .toolbar .label {
+      display: block;
+      width: 0;
+      margin-left: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      opacity: 0;
+      interpolate-size: allow-keywords;
+      transition: width 200ms cubic-bezier(0.23, 1, 0.32, 1), margin-left 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .stack:hover .toolbar .label,
+    .toolbar:has(:focus-visible) .label,
+    .stack:has(.remote-panel.open) .toolbar .label {
+      width: auto;
+      margin-left: 5px;
+      opacity: 1;
+    }
+    .stack:hover .separator,
+    .toolbar:has(:focus-visible) .separator,
+    .stack:has(.remote-panel.open) .separator {
+      width: 1px;
+      margin: 0 2px;
+      opacity: 1;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .toolbar .label,
+      .separator {
+        transition: none;
+      }
+    }
     .remote-btn .chevron {
+      margin-left: 4px;
       width: 10px;
       height: 10px;
       opacity: 0.75;
@@ -931,7 +963,7 @@ export function initPlaywriterToolbar(): void {
   pinBtn.className = 'btn labeled'
   pinBtn.setAttribute('data-tooltip', 'Copy locator')
   pinBtn.setAttribute('aria-label', 'Copy Locator')
-  pinBtn.innerHTML = PIN_SVG + ' <span>Copy Locator</span>'
+  pinBtn.innerHTML = PIN_SVG + '<span class="label">Copy Locator</span>'
   pinBtn.addEventListener('click', (e: MouseEvent) => {
     e.stopPropagation()
     playSound('click')
@@ -948,18 +980,18 @@ export function initPlaywriterToolbar(): void {
   function updateRecordBtn(): void {
     recordBtn.classList.remove('active', 'loading')
     if (isRecording) {
-      recordBtn.innerHTML = STOP_SVG + ' <span>Stop recording\u2026</span>'
+      recordBtn.innerHTML = STOP_SVG + '<span class="label">Stop recording\u2026</span>'
       recordBtn.setAttribute('data-tooltip', 'Stop recording')
       recordBtn.classList.add('active')
       return
     }
     if (startInFlight) {
-      recordBtn.innerHTML = SPINNER_SVG + ' <span>Starting\u2026</span>'
+      recordBtn.innerHTML = SPINNER_SVG + '<span class="label">Starting\u2026</span>'
       recordBtn.setAttribute('data-tooltip', 'Starting recorder')
       recordBtn.classList.add('loading')
       return
     }
-    recordBtn.innerHTML = RECORD_SVG + ' <span>Record Skill</span>'
+    recordBtn.innerHTML = RECORD_SVG + '<span class="label">Record Skill</span>'
     recordBtn.setAttribute('data-tooltip', 'Record a skill')
   }
   updateRecordBtn()
@@ -1108,14 +1140,14 @@ export function initPlaywriterToolbar(): void {
   function updateRemoteBtn(): void {
     remoteBtn.classList.toggle('remote-active', remoteActive)
     if (remoteActive) {
-      remoteBtn.innerHTML = CLOUD_SVG + ' <span>Remote ON</span>' + CHEVRON_SVG
+      remoteBtn.innerHTML = CLOUD_SVG + '<span class="label">Remote ON</span>' + CHEVRON_SVG
       remoteBtn.setAttribute('data-tooltip', 'Remote options')
       remoteBtn.setAttribute('aria-label', 'Remote control options')
       remoteBtn.setAttribute('aria-haspopup', 'menu')
       remoteBtn.setAttribute('aria-expanded', 'false')
       return
     }
-    remoteBtn.innerHTML = CLOUD_SVG + ' <span>Remote control</span>'
+    remoteBtn.innerHTML = CLOUD_SVG + '<span class="label">Remote control</span>'
     remoteBtn.setAttribute('data-tooltip', 'Share browser')
     remoteBtn.setAttribute('aria-label', 'Start remote control')
     remoteBtn.removeAttribute('aria-haspopup')
