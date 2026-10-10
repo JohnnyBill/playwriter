@@ -30,6 +30,18 @@ import {
 import { handleGhostBrowserCommand, type GhostBrowserCommandParams } from 'playwriter/src/ghost-browser'
 import { RemoteTunnel } from './remote-tunnel'
 import {
+  canReattach,
+  endTabSession,
+  recordInitScript,
+  recordSetupCommand,
+  replaySetup,
+  resolveSetupParams,
+  startTabSession,
+  tabSessionIds,
+  takeRemovedFrameIds,
+  trackFrameEvent,
+} from './session-reattach'
+import {
   REMOTE_TUNNEL_BASE_DOMAIN,
   buildRemoteHelloMessage,
   buildRemoteControlPrompt,
@@ -1512,6 +1524,10 @@ async function handleCommand(
   const resolved = getTabForCommand(msg)
   let targetTabId = resolved?.tabId
   let targetTab = resolved?.tab
+  // Hold commands while reattachTab restores the session (same sessionId), Chrome would reject them.
+  if (targetTabId) {
+    await tabReattaches.get(targetTabId)
+  }
 
   const debuggee = targetTabId ? { tabId: targetTabId } : undefined
 
@@ -1571,7 +1587,11 @@ async function handleCommand(
       } catch (e) {
         logger.debug('Error disabling Runtime (ignoring):', e)
       }
-      return await sendCommandWithTimeout(runtimeSession, 'Runtime.enable', msg.params.params, 10000)
+      const result = await sendCommandWithTimeout(runtimeSession, 'Runtime.enable', msg.params.params, 10000)
+      if (!runtimeSession.sessionId) {
+        recordSetupCommand({ tabId: debuggee.tabId, method: 'Runtime.enable', params: msg.params.params })
+      }
+      return result
     }
 
     case 'Target.createTarget': {
@@ -1625,11 +1645,27 @@ async function handleCommand(
     sessionId: msg.params.sessionId !== targetTab.sessionId ? msg.params.sessionId : undefined,
   }
 
-  const timeout = FAST_CDP_COMMAND_TIMEOUT_MS.get(msg.params.method)
-  if (timeout) {
-    return await sendCommandWithTimeout(debuggerSession, msg.params.method, msg.params.params, timeout)
+  const method = msg.params.method
+  const isRootSession = !debuggerSession.sessionId
+  const params = isRootSession
+    ? resolveSetupParams({ tabId: debuggee.tabId, method, params: msg.params.params })
+    : msg.params.params
+  const timeout = FAST_CDP_COMMAND_TIMEOUT_MS.get(method)
+  const result = timeout
+    ? await sendCommandWithTimeout(debuggerSession, method, params, timeout)
+    : await chrome.debugger.sendCommand(debuggerSession, method, params)
+  if (!isRootSession) {
+    return result
   }
-  return await chrome.debugger.sendCommand(debuggerSession, msg.params.method, msg.params.params)
+  if (method === 'Page.addScriptToEvaluateOnNewDocument') {
+    return recordInitScript({
+      tabId: debuggee.tabId,
+      params: msg.params.params,
+      result: result as Protocol.Page.AddScriptToEvaluateOnNewDocumentResponse,
+    })
+  }
+  recordSetupCommand({ tabId: debuggee.tabId, method, params: msg.params.params })
+  return result
 }
 
 // CDP events dropped before sending over WebSocket to the relay.
@@ -1638,10 +1674,7 @@ async function handleCommand(
 // NOTE: *ExtraInfo events feed Playwright's ResponseExtraInfoTracker (request/response.allHeaders()).
 // webSocketFrame* events feed page.on('websocket'). Both must be forwarded.
 // See: https://github.com/remorses/playwriter/issues/96
-const DROPPED_CDP_EVENTS = new Set([
-  'Network.dataReceived',
-  'Network.resourceChangedPriority',
-])
+const DROPPED_CDP_EVENTS = new Set(['Network.dataReceived', 'Network.resourceChangedPriority'])
 
 function onDebuggerEvent(source: chrome.debugger.DebuggerSession, method: string, params: any): void {
   if (DROPPED_CDP_EVENTS.has(method)) {
@@ -1661,6 +1694,10 @@ function onDebuggerEvent(source: chrome.debugger.DebuggerSession, method: string
   // WS starves screenshot and Target.createTarget (extension CPU spike).
   if (method !== 'Page.screencastFrame' && method !== 'Page.lifecycleEvent' && !method.startsWith('Network.')) {
     logger.debug('Forwarding CDP event:', method, 'from tab:', source.tabId)
+  }
+
+  if (!source.sessionId && source.tabId) {
+    trackFrameEvent({ tabId: source.tabId, method, params })
   }
 
   if (method === 'Target.attachedToTarget' && params?.sessionId) {
@@ -1765,17 +1802,98 @@ function onDebuggerDetach(source: chrome.debugger.Debuggee, reason: `${chrome.de
     return
   }
 
-  const tab = store.getState().tabs.get(tabId)
-  if (tab) {
-    detachTabFromPlaywright(tabId, tab)
+  const dropTab = () => {
+    const tab = store.getState().tabs.get(tabId)
+    if (tab) {
+      detachTabFromPlaywright(tabId, tab)
+    }
+    store.setState((state) => {
+      const newTabs = new Map(state.tabs)
+      newTabs.delete(tabId)
+      return { tabs: newTabs }
+    })
+    forgetRemoteTab(tabId)
   }
 
-  store.setState((state) => {
-    const newTabs = new Map(state.tabs)
-    newTabs.delete(tabId)
-    return { tabs: newTabs }
+  const tab = store.getState().tabs.get(tabId)
+  if (reason === chrome.debugger.DetachReason.TARGET_CLOSED && tab?.state === 'connected') {
+    const reattach = reattachTab({ tabId, tab })
+      .then((reattached) => {
+        if (!reattached) {
+          dropTab()
+        }
+        return reattached
+      })
+      .finally(() => {
+        tabReattaches.delete(tabId)
+      })
+    tabReattaches.set(tabId, reattach)
+    return
+  }
+
+  dropTab()
+}
+
+// Chrome detached the tab because another extension injected its iframe (see session-reattach.ts).
+// Reattach with the same sessionId and restore the session so the Playwright page stays valid.
+const tabReattaches = new Map<number, Promise<boolean>>()
+
+async function reattachTab({ tabId, tab }: { tabId: number; tab: TabInfo }): Promise<boolean> {
+  const { sessionId, targetId } = tab
+  if (!sessionId || !targetId) {
+    return false
+  }
+  if (!canReattach(tabId)) {
+    logger.warn(`Not reattaching tab ${tabId}: too many reattaches in a short time`)
+    return false
+  }
+
+  // Remote objects (like Playwright's cached utility script) died with the old session.
+  // Clearing contexts makes new evaluates wait for the contexts replayed by Runtime.enable.
+  // Runs before the first await so it reaches Playwright before any later command.
+  sendMessage({
+    method: 'forwardCDPEvent',
+    params: { sessionId, method: 'Runtime.executionContextsCleared', params: {} },
   })
-  forgetRemoteTab(tabId)
+  // Chrome dropped the OOPIF child sessions too. The replayed Target.setAutoAttach reports them again.
+  emitChildDetachesForTab(tabId)
+
+  logger.warn(`Reattaching debugger to tab ${tabId} after unexpected detach`)
+  try {
+    await chrome.tabs.get(tabId)
+    await removeRestrictedIframes(tabId)
+    const { targetInfo } = await attachTab(tabId, { skipAttachedEvent: true, sessionId })
+    if (targetInfo.targetId !== targetId) {
+      throw new Error(`targetId changed after reattach: ${targetId} -> ${targetInfo.targetId}`)
+    }
+
+    const { frameTree } = (await chrome.debugger.sendCommand(
+      { tabId },
+      'Page.getFrameTree',
+    )) as Protocol.Page.GetFrameTreeResponse
+    takeRemovedFrameIds({ tabId, frameTree }).forEach((frameId) => {
+      sendMessage({
+        method: 'forwardCDPEvent',
+        params: { sessionId, method: 'Page.frameDetached', params: { frameId, reason: 'remove' } },
+      })
+    })
+
+    const failures = await replaySetup({
+      tabId,
+      send: (method, params) => {
+        return sendCommandWithTimeout({ tabId }, method, params, 10000)
+      },
+    })
+    failures.forEach(({ method, error }) => {
+      logger.warn('Failed to replay CDP command after reattach:', method, 'tab:', tabId, error)
+    })
+    logger.warn(`Reattached debugger to tab ${tabId}`)
+    return true
+  } catch (error) {
+    logger.warn('Failed to reattach debugger to tab:', tabId, error)
+    chrome.debugger.detach({ tabId }).catch(() => {})
+    return false
+  }
 }
 
 type AttachTabResult = {
@@ -1789,7 +1907,9 @@ type AttachTabResult = {
 // Extensions like LastPass, SurfingKeys, etc. inject chrome-extension:// iframes into every
 // page, breaking debugger attachment. This function temporarily removes them so the debugger
 // can attach. The iframes stay removed while the debugger is active — they're typically
-// re-injected by the owning extension on next page load.
+// re-injected by the owning extension on next page load. Iframes injected after attach make
+// Chrome detach the debugger instead, see reattachTab.
+// Chromium marked this Won't Fix (Intended Behavior): https://issues.chromium.org/issues/498987209
 // See: https://github.com/remorses/playwriter/issues/18
 async function removeRestrictedIframes(tabId: number): Promise<number> {
   try {
@@ -1797,41 +1917,39 @@ async function removeRestrictedIframes(tabId: number): Promise<number> {
       // allFrames: true ensures we also scan same-origin subframes, not just the top document.
       target: { tabId, allFrames: true },
       func: (ownExtIds: string[]) => {
-        // Traverse both the document and any open shadow roots, since some extensions
-        // inject their chrome-extension:// iframes inside shadow DOM.
-        const roots: ParentNode[] = [document]
-        const elements = document.querySelectorAll('*')
-        elements.forEach((el) => {
-          const shadow = (el as HTMLElement).shadowRoot
-          if (shadow) {
-            roots.push(shadow)
-          }
-        })
-
-        let removed = 0
-        for (const root of roots) {
-          root.querySelectorAll('iframe').forEach((iframe) => {
+        // Returns the extension ids of removed iframes. Extensions like 1Password put their
+        // iframes in closed shadow roots, only reachable via chrome.dom from an isolated world.
+        const removeFrom = (root: Document | ShadowRoot): string[] => {
+          const removed = Array.from(root.querySelectorAll('iframe')).flatMap((iframe) => {
             const src = iframe.src || iframe.getAttribute('src') || ''
             if (!src.startsWith('chrome-extension://')) {
-              return
+              return []
             }
             const extId = src.replace('chrome-extension://', '').split('/')[0]
             if (ownExtIds.includes(extId)) {
-              return
+              return []
             }
             iframe.remove()
-            removed++
+            return [extId]
           })
+          const nested = Array.from(root.querySelectorAll('*')).flatMap((el) => {
+            const shadow = el instanceof HTMLElement ? chrome.dom.openOrClosedShadowRoot(el) : null
+            return shadow ? removeFrom(shadow) : []
+          })
+          return [...removed, ...nested]
         }
-        return removed
+        return removeFrom(document)
       },
       args: [OUR_EXTENSION_IDS],
     })
-    const totalRemoved = results.reduce((sum, r) => sum + (r.result ?? 0), 0)
-    if (totalRemoved > 0) {
-      logger.debug(`Removed ${totalRemoved} restricted chrome-extension:// iframe(s) from tab:`, tabId)
+    const removedExtIds = results.flatMap((r) => r.result ?? [])
+    if (removedExtIds.length > 0) {
+      logger.warn(
+        `Removed ${removedExtIds.length} chrome-extension:// iframe(s) from tab ${tabId}, injected by:`,
+        [...new Set(removedExtIds)].join(', '),
+      )
     }
-    return totalRemoved
+    return removedExtIds.length
   } catch (e) {
     // Scripting may fail on restricted pages (chrome://, about:, etc.) — that's fine,
     // those pages won't have extension iframes anyway.
@@ -1845,7 +1963,13 @@ async function removeRestrictedIframes(tabId: number): Promise<number> {
 // second chrome.debugger.attach fails with "Another debugger is already attached".
 const inFlightTabAttaches = new Map<number, Promise<AttachTabResult>>()
 
-function attachTab(tabId: number, options: { skipAttachedEvent?: boolean } = {}): Promise<AttachTabResult> {
+type AttachTabOptions = {
+  skipAttachedEvent?: boolean
+  // Reuse the Playwright sessionId of a tab Chrome detached unexpectedly (see reattachTab).
+  sessionId?: string
+}
+
+function attachTab(tabId: number, options: AttachTabOptions = {}): Promise<AttachTabResult> {
   const inFlight = inFlightTabAttaches.get(tabId)
   if (inFlight) {
     return inFlight
@@ -1859,7 +1983,7 @@ function attachTab(tabId: number, options: { skipAttachedEvent?: boolean } = {})
 
 async function attachTabDebugger(
   tabId: number,
-  { skipAttachedEvent = false }: { skipAttachedEvent?: boolean } = {},
+  { skipAttachedEvent = false, sessionId: reusedSessionId }: AttachTabOptions = {},
 ): Promise<AttachTabResult> {
   const debuggee = { tabId }
   let debuggerAttached = false
@@ -1909,15 +2033,21 @@ async function attachTabDebugger(
         window.__playwriter_lastRightClicked = e.target;
       }, true);
     `
+    // A reattached tab keeps its document, which already ran these scripts.
+    const runInCurrentDocument = !reusedSessionId
     await chrome.debugger.sendCommand(debuggee, 'Page.addScriptToEvaluateOnNewDocument', { source: contextMenuScript })
-    await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: contextMenuScript })
+    if (runInCurrentDocument) {
+      await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: contextMenuScript })
+    }
 
     // Ghost cursor — survives navigations via addScriptToEvaluateOnNewDocument.
     try {
       await chrome.debugger.sendCommand(debuggee, 'Page.addScriptToEvaluateOnNewDocument', {
         source: ghostCursorBundleCode,
       })
-      await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: ghostCursorBundleCode })
+      if (runInCurrentDocument) {
+        await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: ghostCursorBundleCode })
+      }
     } catch (err) {
       logger.debug('Could not inject ghost cursor (restricted page):', (err as Error).message)
     }
@@ -1939,8 +2069,13 @@ async function attachTabDebugger(
       )
     }
 
-    const attachOrder = nextSessionId
-    const sessionId = `pw-tab-${tabSessionScope}-${nextSessionId++}`
+    const previousTab = store.getState().tabs.get(tabId)
+    const reusedTab = reusedSessionId && previousTab?.sessionId === reusedSessionId ? previousTab : undefined
+    const attachOrder = reusedTab ? reusedTab.attachOrder : nextSessionId
+    const sessionId = reusedTab?.sessionId ?? `pw-tab-${tabSessionScope}-${nextSessionId++}`
+    if (!reusedTab) {
+      startTabSession(tabId)
+    }
 
     store.setState((state) => {
       const newTabs = new Map(state.tabs)
@@ -1953,6 +2088,7 @@ async function attachTabDebugger(
         groupTitle: state.tabs.get(tabId)?.groupTitle,
         groupKey: state.tabs.get(tabId)?.groupKey,
         groupColor: state.tabs.get(tabId)?.groupColor,
+        isRecording: reusedTab?.isRecording,
       })
       return { tabs: newTabs, connectionState: 'connected', errorText: undefined }
     })
@@ -2977,6 +3113,11 @@ store.subscribe((state, prevState) => {
   logger.log(state)
   void updateIcons()
   updateContextMenuVisibility()
+  tabSessionIds()
+    .filter((tabId) => {
+      return !state.tabs.has(tabId)
+    })
+    .forEach(endTabSession)
   const tabsChanged = serializeTabs(state.tabs) !== serializeTabs(prevState.tabs)
   if (tabsChanged) {
     tabGroupQueue = tabGroupQueue.then(syncTabGroup).catch((e) => {

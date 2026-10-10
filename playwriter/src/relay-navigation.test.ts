@@ -811,4 +811,122 @@ describe('Relay Navigation Tests', () => {
       await server.close()
     }
   }, 30000)
+
+  it('should keep the page when another extension injects a chrome-extension:// iframe after attach', async () => {
+    // Reproduces https://github.com/remorses/playwriter/issues/127
+    // 1Password injects its inline menu iframe when a field gets focus. Chrome force-detaches
+    // chrome.debugger from the whole tab at navigation start of that iframe (reason
+    // target_closed). The extension must reattach and replay the session setup so the
+    // Playwright page keeps working. https://issues.chromium.org/issues/498987209
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+    const playwriterExtId = serviceWorker.url().match(/chrome-extension:\/\/([^/]+)/)?.[1]
+    const fixtureExtId = browserContext
+      .serviceWorkers()
+      .map((sw) => sw.url().match(/chrome-extension:\/\/([^/]+)/)?.[1])
+      .find((id) => id && id !== playwriterExtId)
+    expect(fixtureExtId).toBeTruthy()
+
+    const server = await createSimpleServer({
+      routes: { '/': `<!doctype html><html><body><h1>Main page</h1></body></html>` },
+    })
+    const page = await browserContext.newPage()
+    let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined
+    try {
+      await page.goto(server.baseUrl, { waitUntil: 'domcontentloaded' })
+      await page.bringToFront()
+      await serviceWorker.evaluate(async () => {
+        await globalThis.toggleExtensionForActiveTab()
+      })
+
+      browser = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+      const cdpPage = browser
+        .contexts()[0]
+        .pages()
+        .find((p) => p.url().startsWith(server.baseUrl))!
+      // Session state Chrome drops on detach and the extension must replay
+      await cdpPage.setViewportSize({ width: 777, height: 555 })
+      await cdpPage.addInitScript(() => {
+        ;(window as any).__initScriptRan = true
+      })
+      await cdpPage.exposeFunction('double', (n: number) => {
+        return n * 2
+      })
+
+      // Inject like a content script: first in the light DOM, then inside a closed shadow root.
+      // `page` is a direct CDP client, Chrome does not apply chrome.debugger restrictions to it.
+      const injectFrame = async (shadow: boolean) => {
+        await page.evaluate(
+          ({ id, shadow }) => {
+            const iframe = document.createElement('iframe')
+            iframe.src = `chrome-extension://${id}/page.html`
+            if (!shadow) {
+              document.body.appendChild(iframe)
+              return
+            }
+            const host = document.createElement('div')
+            const root = host.attachShadow({ mode: 'closed' })
+            ;(window as any).__closedRoot = root
+            root.appendChild(iframe)
+            document.body.appendChild(host)
+          },
+          { id: fixtureExtId, shadow },
+        )
+        // The extension removes the iframe right before reattaching
+        await page.waitForFunction(
+          () => {
+            const root = (window as any).__closedRoot as ShadowRoot | undefined
+            return !document.querySelector('iframe') && !root?.querySelector('iframe')
+          },
+          undefined,
+          { timeout: 5000 },
+        )
+      }
+
+      await injectFrame(false)
+      expect(await cdpPage.evaluate(() => document.querySelector('h1')?.textContent)).toBe('Main page')
+      await injectFrame(true)
+
+      expect(cdpPage.isClosed()).toBe(false)
+      const afterReattach = await cdpPage.evaluate(async () => {
+        return {
+          title: document.querySelector('h1')?.textContent,
+          width: window.innerWidth,
+          doubled: await (window as any).double(21),
+        }
+      })
+      // Frames removed while detached must not stay in Playwright's frame tree
+      expect({ ...afterReattach, frames: cdpPage.frames().length }).toMatchInlineSnapshot(`
+        {
+          "doubled": 42,
+          "frames": 1,
+          "title": "Main page",
+          "width": 777,
+        }
+      `)
+
+      await cdpPage.reload()
+      expect(
+        await cdpPage.evaluate(() => {
+          return { initScriptRan: (window as any).__initScriptRan, width: window.innerWidth }
+        }),
+      ).toMatchInlineSnapshot(`
+        {
+          "initScriptRan": true,
+          "width": 777,
+        }
+      `)
+      expect(cdpPage.isClosed()).toBe(false)
+    } finally {
+      await browser?.close()
+      await page.bringToFront()
+      await serviceWorker
+        .evaluate(async () => {
+          await globalThis.toggleExtensionForActiveTab()
+        })
+        .catch(() => {})
+      await page.close()
+      await server.close()
+    }
+  }, 30000)
 })
