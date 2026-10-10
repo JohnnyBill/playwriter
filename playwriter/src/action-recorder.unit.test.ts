@@ -138,6 +138,34 @@ describe('ActionRecordingManager start lifecycle', () => {
     })
   })
 
+  test('recording auto-stops when it grows past maxBytes', async () => {
+    await withTempRecordings(async (dir) => {
+      const manager = new ActionRecordingManager({
+        logger: { log: () => {}, error: () => {} },
+      })
+      // The recording-started event alone is larger than 10 bytes
+      const recorder = await manager.start({
+        context: createFakeContext({}),
+        sessionId: '1',
+        maxBytes: 10,
+      })
+      await wait(20)
+      expect(manager.list()).toEqual([])
+      const events = parseRecording(fs.readFileSync(path.join(dir, `${recorder.recordingId}.json`), 'utf-8'))
+      const stopped = events.find((event) => {
+        return event.type === 'recording-stopped'
+      })
+      expect({ reason: stopped?.reason, maxBytes: stopped?.maxBytes, overLimit: Number(stopped?.bytes) > 10 })
+        .toMatchInlineSnapshot(`
+          {
+            "maxBytes": 10,
+            "overLimit": true,
+            "reason": "max-size",
+          }
+        `)
+    })
+  })
+
   test('notifies onActiveChanged on every successful start, not only the first', async () => {
     await withTempRecordings(async () => {
       const active: boolean[] = []

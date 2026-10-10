@@ -3,7 +3,8 @@
 The user is performing a workflow in their browser. Clicks, fills, keypresses,
 navigations, and mutating xhr/fetch are written to a JSON event file. CDP
 screencast writes a jpeg into a frames folder whenever the page changes. User
-clicks flash a short ripple in those frames. Recording auto-stops after 20 minutes.
+clicks flash a short ripple in those frames. Recording auto-stops after 20 minutes or
+500 MB of frames and events (`reason: "max-size"`).
 
 The end goal: a **skill** (`SKILL.md` plus an importable utils script) that
 replays the flow with **playwriter** commands. Never drive the browser with raw

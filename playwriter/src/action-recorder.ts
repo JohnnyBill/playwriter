@@ -177,6 +177,8 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const PERSIST_DEBOUNCE_MS = 50
 const MAX_EVENTS = 10000
 export const DEFAULT_RECORDING_MAX_DURATION_MS = 20 * 60 * 1000
+// Frames plus events. A busy 3 minute recording wrote ~530 MB of frames.
+export const DEFAULT_RECORDING_MAX_BYTES = 500 * 1024 * 1024
 export const DEFAULT_RECORDER_ENABLE_TIMEOUT_MS = 15_000
 export const DEFAULT_RECORDER_DISABLE_TIMEOUT_MS = 2_000
 // Cap concurrent recordings. A new start past the cap stops the oldest
@@ -402,7 +404,7 @@ interface PageHandlers {
   pageerror: (error: Error) => void
 }
 
-export type RecordingStopReason = 'user' | 'max-duration' | 'context-closed' | 'start-failed' | 'replaced'
+export type RecordingStopReason = 'user' | 'max-duration' | 'max-size' | 'context-closed' | 'start-failed' | 'replaced'
 
 export interface ActionRecorderOptions {
   context: BrowserContext
@@ -410,6 +412,8 @@ export interface ActionRecorderOptions {
   recordingId: string
   logger: RecorderLogger
   maxDurationMs?: number
+  /** Auto-stop when frames plus events exceed this many bytes. 0 or Infinity disables. */
+  maxBytes?: number
   enableTimeoutMs?: number
   disableTimeoutMs?: number
   /** Test seam: resolve after enable, before the recording is marked ready. */
@@ -428,6 +432,8 @@ export class ActionRecorder {
   private logger: RecorderLogger
   private state: 'starting' | 'recording' | 'stopping' | 'stopped' = 'starting'
   private maxDurationMs: number
+  private maxBytes: number
+  private bytes = 0
   private enableTimeoutMs: number
   private disableTimeoutMs: number
   private holdAfterEnable: (() => Promise<void>) | null
@@ -456,6 +462,7 @@ export class ActionRecorder {
     this.logger = options.logger
     this.filePath = recordingFilePath(options.recordingId)
     this.maxDurationMs = options.maxDurationMs ?? DEFAULT_RECORDING_MAX_DURATION_MS
+    this.maxBytes = options.maxBytes ?? DEFAULT_RECORDING_MAX_BYTES
     this.enableTimeoutMs = options.enableTimeoutMs ?? DEFAULT_RECORDER_ENABLE_TIMEOUT_MS
     this.disableTimeoutMs = options.disableTimeoutMs ?? DEFAULT_RECORDER_DISABLE_TIMEOUT_MS
     this.holdAfterEnable = options.holdAfterEnable ?? null
@@ -529,14 +536,30 @@ export class ActionRecorder {
     }
     const id = this.events.length + 1
     const atMs = at ?? Date.now()
-    this.events.push({
+    const stored = {
       id,
       ...event,
       t: this.relativeTime(atMs),
       ms: this.elapsedMs(atMs),
-    })
+    }
+    this.events.push(stored)
     this.persist()
+    this.addBytes(Buffer.byteLength(JSON.stringify(stored)))
     return id
+  }
+
+  private addBytes(count: number) {
+    this.bytes += count
+    this.stopIfTooLarge()
+  }
+
+  private stopIfTooLarge() {
+    if (this.state !== 'recording' || !(this.maxBytes > 0) || this.bytes <= this.maxBytes) {
+      return
+    }
+    this.stop({ reason: 'max-size' }).catch((error) => {
+      this.logger.error('[record] auto-stop on max size failed:', error)
+    })
   }
 
   private persist() {
@@ -649,6 +672,7 @@ export class ActionRecorder {
     }
     this.state = 'recording'
     this.scheduleMaxDurationStop()
+    this.stopIfTooLarge()
   }
 
   async stop(options?: { reason?: RecordingStopReason }): Promise<{ eventCount: number; filePath: string }> {
@@ -674,6 +698,8 @@ export class ActionRecorder {
       durationSeconds: Math.round((Date.now() - this.startedAt) / 1000),
       framesDir: this.framesDir,
       frameCount: this.frameCount,
+      bytes: this.bytes,
+      maxBytes: reason === 'max-size' ? this.maxBytes : undefined,
     })
     this.flushPersist()
     await this.disableRecorder()
@@ -1007,8 +1033,10 @@ export class ActionRecorder {
         if (fs.existsSync(path.join(this.framesDir, name))) {
           name = `${ms}-${this.frameCount + 1}.jpg`
         }
-        fs.writeFileSync(path.join(this.framesDir, name), Buffer.from(event.data, 'base64'))
+        const jpeg = Buffer.from(event.data, 'base64')
+        fs.writeFileSync(path.join(this.framesDir, name), jpeg)
         this.frameCount += 1
+        this.addBytes(jpeg.length)
       }
       session.on('Page.screencastFrame', onFrame)
       this.screencasts.set(page, { session, onFrame })
@@ -1312,6 +1340,7 @@ export class ActionRecordingManager {
     context,
     sessionId,
     maxDurationMs,
+    maxBytes,
     enableTimeoutMs,
     disableTimeoutMs,
     holdAfterEnable,
@@ -1319,6 +1348,7 @@ export class ActionRecordingManager {
     context: BrowserContext
     sessionId: string
     maxDurationMs?: number
+    maxBytes?: number
     enableTimeoutMs?: number
     disableTimeoutMs?: number
     holdAfterEnable?: () => Promise<void>
@@ -1357,6 +1387,7 @@ export class ActionRecordingManager {
         recordingId: this.nextRecordingId(),
         logger: this.logger,
         maxDurationMs,
+        maxBytes,
         enableTimeoutMs,
         disableTimeoutMs,
         holdAfterEnable,

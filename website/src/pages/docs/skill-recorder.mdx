@@ -21,7 +21,8 @@ writes a **skill**: a SKILL.md of markdown instructions with example playwriter 
     moment every click, fill, navigation, and mutating xhr/fetch is captured
     to a JSON event file. A jpeg is saved for each visual change; clicks
     flash a ripple in those frames. Recording attaches to the current
-    Playwriter tabs and auto-stops after 20 minutes.
+    Playwriter tabs and auto-stops after 20 minutes or 500 MB of frames and
+    events.
   </Step>
   <Step title='Perform the workflow in your browser'>
     Use the app like you normally would, in your real Chrome with your real logins.
@@ -395,9 +396,11 @@ The recorder only sees tabs where Playwriter is enabled. Click the extension
 icon on the tab you are using. Headless and direct-CDP sessions do not record
 your real Chrome; use the extension.
 
-### Recording died after 20 minutes
+### Recording died after 20 minutes or 500 MB
 
-Auto-stop is a safety limit. Start again. Events already written stay in
+Auto-stop is a safety limit. The `recording-stopped` event has `reason:
+"max-duration"` or `reason: "max-size"`. Busy pages produce many frames, so
+keep long workflows short or split them. Start again. Events already written stay in
 `~/.playwriter/recordings/<id>.json`.
 
 ### Locators from the recording do not work
