@@ -484,6 +484,35 @@ describe('action recording', () => {
     await extraBrowser.close()
   }, 120000)
 
+  it('binding calls are answered only by the client that exposed them', async () => {
+    const browserContext = testCtx!.browserContext
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+
+    const page = await browserContext.newPage()
+    await page.goto('https://example.com/?binding-owner')
+    await page.bringToFront()
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await new Promise((r) => setTimeout(r, 200))
+
+    const owner = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+    const other = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+    const ownerPage = owner.contexts()[0].pages().find((p) => p.url().includes('?binding-owner'))!
+    expect(other.contexts()[0].pages().some((p) => p.url().includes('?binding-owner'))).toBe(true)
+    // Slow binding: the other client answers first if it answers at all
+    await ownerPage.exposeFunction('slowDouble', async (n: number) => {
+      await new Promise((r) => setTimeout(r, 300))
+      return n * 2
+    })
+
+    const result = await ownerPage.evaluate(() => (window as any).slowDouble(21).catch((e: Error) => e.message))
+    expect(result).toBe(42)
+
+    await other.close()
+    await owner.close()
+  }, 120000)
+
   // New tabs only reach the recorder if the extension attaches them: popup
   // windows via relocation, modifier/middle/_blank tabs via tab group inheritance.
   it('records popup windows and links opened in new tabs', async () => {
