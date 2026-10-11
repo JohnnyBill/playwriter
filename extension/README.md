@@ -39,8 +39,8 @@ Playwriter MCP is a Chrome extension that enables Playwright to connect to your 
 This extension uses these permissions for its browser automation purpose:
 
 - **debugger**: Control tabs selected by the user through Chrome DevTools Protocol
-- **scripting**: Show the isolated Playwriter toolbar on connected tabs
-- **tabGroups and contextMenus**: Organize connected tabs and support Pin element
+- **scripting**: Pin the right-clicked element and show short confirmation toasts
+- **tabGroups and contextMenus**: Organize connected tabs, add **Copy Playwriter Locator** to the page menu, and add Record and Remote control items to the icon menu
 - **tabCapture, offscreen, and clipboardWrite**: Record selected tabs and copy prompts after user actions
 - **storage**: Keep a local installation ID and active Remote control session state
 - **identity and identity.email**: Distinguish Chrome profiles connected to the same local relay; these values are not sent through Remote control
@@ -59,7 +59,7 @@ This extension uses these permissions for its browser automation purpose:
 
 Playwriter MCP is **local by default**. Normal browser control travels between the extension and the relay on your computer.
 
-The optional **Remote control** feature sends browser data through an encrypted `playwriter.dev` tunnel only after you click the toolbar button and accept a disclosure. This can include screenshots, page content, URLs, input events, network data, cookies, and browser storage. Tunnel payloads are relayed in memory and are not stored by Playwriter.
+The optional **Remote control** feature sends browser data through an encrypted `playwriter.dev` tunnel only after you click **Share browser…** in the icon menu and accept a disclosure. This can include screenshots, page content, URLs, input events, network data, cookies, and browser storage. Tunnel payloads are relayed in memory and are not stored by Playwriter.
 
 Remote control is **not a security sandbox**. Anyone holding the secret link receives broad browser automation access until you revoke it. Share the link only with a person or agent you fully trust.
 

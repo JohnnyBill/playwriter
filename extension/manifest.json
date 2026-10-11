@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Playwriter",
-  "version": "0.0.160",
+  "version": "0.0.164",
   "description": "Automate your Browser using Cursor, Claude, VS Code. More capable and context efficient than Playwright MCP.",
   "permissions": [
     "debugger",
@@ -21,6 +21,13 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_start"
+    }
+  ],
   "action": {
     "default_title": "Click to attach debugger",
     "default_icon": {

@@ -53,12 +53,20 @@ export interface OffscreenCopyTextMessage {
   text: string
 }
 
+export type SoundName = 'success' | 'record'
+
+export interface OffscreenPlaySoundMessage {
+  action: 'playSound'
+  sound: SoundName
+}
+
 export type OffscreenMessage =
   | OffscreenStartRecordingMessage
   | OffscreenStopRecordingMessage
   | OffscreenIsRecordingMessage
   | OffscreenCancelRecordingMessage
   | OffscreenCopyTextMessage
+  | OffscreenPlaySoundMessage
 
 // Offscreen document response types
 export type OffscreenStartRecordingResult =
@@ -101,6 +109,8 @@ export type OffscreenCancelRecordingResult =
     }
 
 export type OffscreenCopyTextResult = { success: true } | { success: false; error: string }
+
+export type OffscreenPlaySoundResult = { success: true } | { success: false; error: string }
 
 // Messages sent FROM offscreen TO background
 export interface OffscreenRecordingChunkMessage {

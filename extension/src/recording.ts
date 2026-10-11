@@ -52,8 +52,8 @@ export async function ensureOffscreenDocument(): Promise<void> {
 
   offscreenDocumentCreating = chrome.offscreen.createDocument({
     url: 'src/offscreen.html',
-    reasons: [chrome.offscreen.Reason.USER_MEDIA, chrome.offscreen.Reason.CLIPBOARD],
-    justification: 'Record tabs and copy toolbar prompts',
+    reasons: [chrome.offscreen.Reason.USER_MEDIA, chrome.offscreen.Reason.CLIPBOARD, chrome.offscreen.Reason.AUDIO_PLAYBACK],
+    justification: 'Record tabs, copy prompts to the clipboard, and play menu action sounds',
   })
 
   try {

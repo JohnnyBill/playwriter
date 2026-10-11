@@ -12,6 +12,7 @@ declare global {
     status: string
     remoteTabIds: number[]
   } | null
+  var runMenuItemForActiveTab: (menuItemId: string) => Promise<void>
 
   // Browser globals used in evaluate() calls
   var window: any

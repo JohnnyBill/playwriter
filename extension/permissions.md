@@ -18,22 +18,22 @@ console inspection, JavaScript debugging, and user-requested script evaluation.
 
 Remote control uses the same documented Debugger API. It gives the authorized
 remote client the same access as a local client: every Playwriter-connected tab,
-plus new tabs it opens. It is not a security sandbox. The user must click the
-in-page toolbar button and accept a disclosure before the encrypted tunnel
-starts.
+plus new tabs it opens. It is not a security sandbox. The user must click
+**Share browser…** in the extension icon menu and accept a disclosure in an
+extension window before the encrypted tunnel starts.
 
 ### scripting
 
-Used only on Playwriter-connected tabs to:
+Used only after the user clicks a Playwriter menu item to:
 
-1. Inject the in-page toolbar into Chrome's isolated extension world.
-2. Re-inject the toolbar after navigation.
-3. Remove the toolbar when the user disconnects the tab.
-4. Support user-requested element pinning and toolbar feedback.
+1. Pin the element the user right-clicked (**Copy Playwriter Locator**) as a
+   page global, so an automation client can address it.
+2. Show a short confirmation toast, like `Copied locator`.
 
-The toolbar targets the top-level frame and uses a closed shadow root. Privileged
-actions call `chrome.runtime` from the isolated world. Website scripts cannot call
-the toolbar callbacks or start Remote control.
+A small content script runs in Chrome's isolated extension world in the top
+frame. It only remembers the last right-clicked element in memory and renders
+toasts in a closed shadow root. It sends no data anywhere and adds no page
+globals. Website scripts cannot reach it or start Remote control.
 
 ### tabGroups
 
@@ -43,9 +43,10 @@ source workflow.
 
 ### contextMenus
 
-Adds the user-invoked **Pin element for Playwriter** context-menu action. The
-action records a reference to the element that the user selected so an automation
-client can address it.
+Adds the user-invoked **Copy Playwriter Locator** page menu action. The action
+records a reference to the element that the user right-clicked so an automation
+client can address it. The extension icon menu adds **Record skill**, **Share
+browser…**, and, while sharing, **Stop sharing**.
 
 ### tabCapture
 
@@ -55,14 +56,15 @@ offscreen document and sent to the local relay for recording.
 
 ### offscreen
 
-Creates a hidden extension document for `MediaRecorder` and user-requested
-clipboard writes. Service workers cannot own media streams or use the document
-clipboard APIs directly.
+Creates a hidden extension document for `MediaRecorder`, user-requested
+clipboard writes, and short confirmation sounds after menu actions. Service
+workers cannot own media streams or use the document clipboard or Web Audio
+APIs directly.
 
 ### clipboardWrite
 
-Copies prompts after trusted user actions such as **Remote control**, **Record
-Skill**, or **Pin element**. The website cannot request a clipboard write. The
+Copies prompts after trusted user actions such as **Share browser…**, **Record
+skill**, or **Copy Playwriter Locator**. The website cannot request a clipboard write. The
 offscreen document accepts only its allowlisted internal actions.
 
 ### storage
@@ -84,14 +86,16 @@ control handshake or sent through the Playwriter tunnel.
 ### webNavigation
 
 Detects navigation and when a controlled tab opens a popup or new navigation
-target. This lets Playwriter re-inject its toolbar after navigation and keep an
-OAuth or payment popup with the tab that opened it.
+target. This lets Playwriter keep an OAuth or payment popup with the tab that
+opened it.
 
 ### host_permissions (`<all_urls>`)
 
 Required because users can choose to automate a tab on any website. Playwriter
 does not attach to every existing tab. It attaches after the user clicks the
-extension icon, or to new tabs opened by an authorized automation client.
+extension icon or a Playwriter menu item, or to new tabs opened by an authorized
+automation client. The isolated content script runs on every site so the
+right-click menu can copy a locator before the tab is attached.
 
 ### tabs in test builds
 
@@ -137,8 +141,8 @@ authentication token, and a network or tunnel configuration that they control.
 In that mode, connected-tab data and local relay metadata can reach clients that
 hold the token.
 
-Remote control is disabled by default. It starts only after the user clicks its
-toolbar button and accepts a disclosure. The recipient receives the same broad
+Remote control is disabled by default. It starts only after the user clicks
+**Share browser…** in the extension icon menu and accepts a disclosure. The recipient receives the same broad
 CDP access as a local client: every Playwriter-connected tab, plus new tabs it
 opens. Browser data is
 relayed over encrypted WebSockets through Playwriter's Cloudflare infrastructure
@@ -206,7 +210,7 @@ Add this feature description:
 > open new tabs. Remote control is not a security sandbox. Traffic can include screenshots, page content, URLs, input events,
 > network data, cookies, authentication data, and browser storage.
 > Playwriter routes tunnel payloads in memory and does not store them. Anyone with
-> the link has access until you open Remote ON and click Stop sharing.
+> the link has access until you click Stop sharing in the extension icon menu.
 
 Replace the current **Permissions** list. It incorrectly names `activeTab` and
 `tabs`, which are not production manifest permissions. Use this shorter public
@@ -215,14 +219,14 @@ summary:
 > **debugger:** Control tabs selected by the user through Chrome DevTools
 > Protocol.
 >
-> **scripting:** Show and update the isolated Playwriter toolbar on connected
-> tabs.
+> **scripting:** Pin the right-clicked element and show short confirmation
+> toasts after menu actions.
 >
-> **tabGroups, contextMenus:** Organize controlled tabs and support the
-> user-invoked Pin element action.
+> **tabGroups, contextMenus:** Organize controlled tabs and add Playwriter
+> actions to the page and extension icon menus.
 >
 > **tabCapture, offscreen, clipboardWrite:** Record a selected tab and copy
-> prompts after explicit toolbar actions.
+> prompts after explicit menu actions.
 >
 > **storage:** Keep a local installation ID and active Remote control session
 > state.
@@ -270,11 +274,11 @@ Delete or rewrite these current claims because they become false:
 ### Reviewer instructions
 
 1. Install the extension and click its icon on a normal HTTPS tab.
-2. Click the light-blue **Remote control** toolbar button.
-3. Verify that a short disclosure appears, with a Read more link, before any tunnel starts.
-4. Accept it and verify that the toolbar shows **Remote ON**.
+2. Right-click the extension icon and click **Share browser…**.
+3. Verify that a disclosure window appears, with a Read more link, before any tunnel starts.
+4. Click **Share** and verify that the icon menu now shows **Stop sharing**.
 5. Open the copied link in another browser and verify the tab viewer.
-6. Open the **Remote ON** dropdown, click **Stop sharing**, and verify that the link disconnects immediately.
+6. Right-click the extension icon, click **Stop sharing**, and verify that the link disconnects immediately.
 7. Note that remote logic uses only the policy-exempt Debugger API and that no
    remote JavaScript bundle is loaded by the extension.
 
@@ -285,5 +289,5 @@ Provide screenshots showing:
 - The extension icon when disconnected and connected
 - Chrome's debugger banner on a connected tab
 - The Remote control disclosure before sharing starts
-- The toolbar's visible **Remote ON** state
+- The icon menu with **Stop sharing** while a share is active
 - The browser viewer connected to the shared browser

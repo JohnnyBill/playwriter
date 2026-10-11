@@ -8,9 +8,9 @@ Control a Chrome browser on any machine from anywhere over the internet. No VPN,
 
 ## Remote control: share your browser, zero setup
 
-The simplest way to give a remote agent access to your browser is the **Remote control** button (light-blue cloud) in the Playwriter toolbar. It requires **no playwriter install** on your machine, only the extension. The extension itself opens a secret tunnel. The agent sees every Playwriter tab and can open new ones.
+The simplest way to give a remote agent access to your browser is **Share browser…** in the Playwriter icon menu (right-click the extension icon). It requires **no playwriter install** on your machine, only the extension. The extension itself opens a secret tunnel. The agent sees every Playwriter tab and can open new ones.
 
-1. Click the **Remote control** button and confirm that the agent may read and control your browser. [Read more about security](./remote-control.mdx).
+1. Right-click the Playwriter icon, click **Share browser…**, and confirm that the agent may read and control your browser. [Read more about security](./remote-control.mdx).
 2. A prompt containing the secret URL is copied to your clipboard. Paste it to the agent.
 3. The agent runs, on its own machine:
 
@@ -19,7 +19,7 @@ playwriter session new --remote <id>
 playwriter -s 1 -e "state.page = context.pages()[0]; console.log(await state.page.title())"
 ```
 
-4. Open the **Remote ON** dropdown in any Playwriter tab and click **Stop sharing** anytime to **revoke access**. The URL dies instantly and is never reused. Tabs the agent opened are detached and left open.
+4. Right-click the Playwriter icon and click **Stop sharing** anytime to **revoke access**. The URL dies instantly and is never reused. Tabs the agent opened are detached and left open.
 
 Remote control is **not a security sandbox**. The agent gets the same access as a local Playwriter agent, so it must be fully trusted. A short denylist blocks only whole-profile cookie APIs and cache clears.
 

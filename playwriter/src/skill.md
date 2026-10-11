@@ -145,19 +145,19 @@ playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto(
 
 ### Remote control (drive another user's browser)
 
-When a user shares their browser with you, they send a secret **id** (created by clicking the **Remote control** button in the Playwriter toolbar). The user needs no playwriter install, only the extension.
+When a user shares their browser with you, they send a secret **id** (created by right-clicking the Playwriter icon, then **Share browser…**). The user needs no playwriter install, only the extension.
 
 **How it works:** the extension opens a secret tunnel. Your CLI dials it with the id and talks CDP as if the browser were local. You see every tab where the user enabled Playwriter and can open new tabs with `context.newPage()` (older extensions reject new tabs; then stay in the shared tab). `context.pages()[0]` is the tab where the user started sharing.
 
 Connect with:
 
 ```bash
-playwriter session new --remote <id>
+playwriter session new --remote <id> --tab-group shop
 # prints a session id; use it normally afterwards, no extra flags needed
 playwriter -s 1 -e "state.page = context.pages()[0]; console.log(await state.page.title())"
 ```
 
-Tabs you open join the `remote` tab group. Set another title with `--tab-group <name>`.
+Tabs you open join the `--tab-group` group (default `remote`). Always pass a short task name.
 
 Rules for remote-control sessions:
 
@@ -325,7 +325,7 @@ The file is read from disk and executed in the same sandbox as `-e`. All context
 
 Before any recorder work, run `playwriter skill` once and read the full output (never truncate).
 
-The user can start recording from the **in-page toolbar** (Record) or ask you to run `playwriter recorder start`. Both write the same event file. The toolbar does not pick a session; the relay attaches to any free extension session (or creates one). Session choice does not matter: extension sessions share the same Chrome tabs. You identify the recording later at **stop** time.
+The user can start recording from the Playwriter icon menu (right-click the icon, **Record skill**) or ask you to run `playwriter recorder start`. Both write the same event file. The icon menu does not pick a session; the relay attaches to any free extension session (or creates one). Session choice does not matter: extension sessions share the same Chrome tabs. You identify the recording later at **stop** time.
 
 `playwriter recorder start` records everything the user does in the browser (clicks, typing, navigations, mutating xhr/fetch) as events with generated locator strings. It also saves a jpeg of each visual change into a frames folder (`~/.playwriter/recordings/<id>/frames`, files named `<ms>.jpg`). User clicks flash a ripple in those frames. To see the screen at an event, read the jpeg whose filename is closest to that event's `ms`. When the user asks you to "start recording", run it and let them perform their workflow. You may run playwriter commands on that session if they ask (snapshot, inspect, click something). If they did not ask, ask first. Do not drive the workflow yourself.
 
@@ -342,7 +342,7 @@ playwriter recorder events 4 7       # full details of events 4 and 7
 
 Run `playwriter recorder stop` when they say done, then `playwriter recorder events -r <id>` to read the events. If stop fails because **more than one recording is active**, the error lists each recording id, session, and current or last page URL. Pick the one that matches the workflow (or ask the user), then `playwriter recorder stop <id>`. Replay the flow with **playwriter** commands only (`playwriter -s <id> -e '...'`), never raw Playwright. The `recorder start` output prints full instructions for turning a recording into a reusable skill: a SKILL.md of markdown instructions with example playwriter commands, plus an importable helper script (`submit.js`, `sdk.js`) for cheap replay. Recording runs inside the relay daemon, so it survives CLI exits. Pass `-s <id>` to record an existing session; the recorder attaches to all Playwriter-enabled tabs and does not open a new tab. A recording auto-stops after 20 minutes or 500 MB of frames and events (`reason: "max-size"`).
 
-If the user started from the toolbar and then says "done", still run `playwriter recorder stop` (or `stop <id>` if several are listed). The toolbar Stop button also works; it stops the recording it started.
+If the user started from the icon menu and then says "done", still run `playwriter recorder stop` (or `stop <id>` if several are listed). The icon menu **Stop recording** also works.
 
 ### Live streaming to RTMP (X Live, Twitch, YouTube)
 
@@ -1138,7 +1138,7 @@ const info = await getReactComponentInfo({ locator: state.page.locator('[data-te
 // => { componentName, source, hierarchy, props } | null
 ```
 
-**inspectPinnedElement** - inspect a Playwriter pinned element and print the element `outerHTML` plus React component info when available. Used by the in-page toolbar and right-click copy flow.
+**inspectPinnedElement** - inspect a Playwriter pinned element and print the element `outerHTML` plus React component info when available. Used by the right-click **Copy Playwriter Locator** flow.
 
 ```js
 await inspectPinnedElement('https://example.com', 'globalThis.playwriterPinnedElem1')
@@ -1247,7 +1247,7 @@ const demoPath = await createDemoVideo({
 
 ## pinned elements
 
-Users can right-click → "Copy Playwriter Element Reference" to store elements in `globalThis.playwriterPinnedElem1` (increments for each pin). The reference is copied to clipboard:
+Users can right-click → "Copy Playwriter Locator" (works even on tabs not yet enabled; it enables them) to store elements in `globalThis.playwriterPinnedElem1` (increments for each pin). The reference is copied to clipboard:
 
 ```js
 const el = await state.page.evaluateHandle(() => globalThis.playwriterPinnedElem1)

@@ -2023,7 +2023,7 @@ export async function startPlayWriterCDPRelayServer({
   // Remote control dials — outbound extension connections through traforo.
   //
   // The user's extension exposes its /extension protocol behind a unique tunnel
-  // URL (Remote control toolbar button). The relay dials that URL and registers
+  // URL (icon menu Share browser…). The relay dials that URL and registers
   // the socket as a normal extension connection. Sessions reference it via
   // Hashed `remote:` stable keys let sessions survive tunnel reconnects (extension
   // service worker restarts, network blips). See remote-control.ts.

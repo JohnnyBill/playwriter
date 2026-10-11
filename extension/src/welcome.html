@@ -132,11 +132,6 @@
         font-weight: 600;
       }
 
-      .hl-green {
-        color: var(--color-success);
-        font-weight: 600;
-      }
-
       .c-gray {
         color: var(--color-muted);
       }
@@ -381,11 +376,11 @@
           </svg>
           <span class="copy-btn-label">Copy agent prompt to install</span>
         </button>
-        <p id="prompt-text" hidden>Install the Playwriter skill by running: npx -y skills add https://playwriter.dev
+        <p id="prompt-text" hidden>Install the Playwriter skill by running: npx -y skills add https://playwriter.dev -g -y
 Then read the skill (or run `npx playwriter skill`) to learn the API.
 Then use Playwriter to open a new tab and navigate to the GitHub project at https://github.com/remorses/playwriter.</p>
 
-        <p>It installs the skill, then drives your <span class="hl-green">existing Chrome</span>. No new browser, no context bloat.</p>
+        <p>It installs the skill, then drives your <span class="hl">existing Chrome</span>. No new browser, no context bloat.</p>
       </section>
 
       <details>
@@ -429,7 +424,7 @@ playwriter -e "state.page = await context.newPage()"</code></pre>
               <strong>Add the skill to your agent</strong>
               <p>Install the Playwriter skill so your agent can call the CLI:</p>
               <pre><code class="language-bash"># add playwriter skill to your coding agent
-npx -y skills add https://playwriter.dev</code></pre>
+npx -y skills add https://playwriter.dev -g -y</code></pre>
             </div>
           </div>
 

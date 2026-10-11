@@ -84,7 +84,7 @@ playwriter session new
 
 ## Recorder start and stop
 
-The toolbar **Record Skill** button does not fetch the relay from the page. The page posts a message to the content script. The **service worker** then calls `POST /recorder/start`.
+The icon menu **Record skill** item runs in the **service worker**, never in the page. The service worker calls `POST /recorder/start`.
 
 CORS on those routes allows only the Playwriter **extension origin**. A website cannot pass the preflight, so it cannot start or stop a recording.
 

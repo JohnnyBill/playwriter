@@ -242,13 +242,14 @@ Neither is a regression signal for unrelated changes. Careful: `pnpm test`
 passes `-u`, so these failing snapshot tests get rewritten with wrong values —
 always review the test-file git diff after a full run.
 
-## Toolbar runs in ISOLATED world, never MAIN (Apr 2026)
+## No in-page UI, menus only (Oct 2026)
 
-Privileged toolbar buttons must call `chrome.runtime.sendMessage` from the
-ISOLATED world. A `window.postMessage` bridge lets any page script start
-recording or remote control. Page CSS still styles the light-DOM host, so it
-needs `all:initial`; `example.com` ships `div{opacity:.8}` which silently
-disabled both buttons until the click guard started toasting on rejection.
+The in-page toolbar was removed. Page CSS could restyle or cover it, and a
+`window.postMessage` bridge once let any page start recording or remote
+control. All actions now live in Chrome menus (page right-click, icon
+right-click). Remote control consent lives in `share.html`, an extension page
+the website cannot touch. The isolated content script only remembers the last
+right-clicked element and draws toasts; never expose it to the MAIN world.
 
 ## Offscreen document must filter chrome.runtime messages (Apr 2026)
 

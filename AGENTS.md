@@ -91,9 +91,11 @@ Do not manually edit CHANGELOG.md files for extension changes. Always add a `pla
 
 anonymous usage events live in `playwriter/src/telemetry.ts` and use `@strada.sh/sdk`. add new events to the `TelemetryEvents` type and call `trackEvent()`, never `track()` directly. only the relay emits events. never send code, URLs, page content, emails, hostnames, or paths. error reporting is off on purpose.
 
-## toolbar copy
+## menu copy
 
-keep toolbar tooltips and action toasts very short. a few words the user can read at a glance. `Copied prompt`, not a sentence that explains the feature.
+menu titles say what the click does, so users discover features: `Record skill: record your clicks and typing for an agent`. keep the short feature name first (`Record skill`, `Share browser`) so docs still match. keep action toasts very short: `Copied prompt`, not a sentence.
+
+all Playwriter UI lives in Chrome menus (page right-click and extension icon right-click, see the `Menus` section in `extension/src/background.ts`). never inject toolbars or buttons into pages: websites can restyle or overlay them.
 
 ## github releases
 

@@ -16,7 +16,7 @@ writes a **skill**: a SKILL.md of markdown instructions with example playwriter 
 
 <Steps>
   <Step title='Start recording'>
-    Click **Record** on the in-page Playwriter toolbar, or tell your agent
+    Right-click the Playwriter icon and click **Record skill**, or tell your agent
     "start recording". The agent runs `playwriter recorder start`. From this
     moment every click, fill, navigation, and mutating xhr/fetch is captured
     to a JSON event file. A jpeg is saved for each visual change; clicks
@@ -101,13 +101,13 @@ The **goal** is not a Playwright test file. You show a workflow once in your rea
 Chrome. The agent turns that recording into a **skill**: markdown steps plus
 example `playwriter` commands an agent can replay later with your logins.
 
-Recording is a **relay daemon** job. The CLI or toolbar only toggles it. Closing
+Recording is a **relay daemon** job. The CLI or icon menu only toggles it. Closing
 the terminal does not stop it.
 
 ```diagram
 You (Chrome)                                   Agent (CLI)
      │                                              │
-     │  toolbar Record                              │  playwriter recorder start
+     │  icon menu Record skill                      │  playwriter recorder start
      ▼                                              ▼
 POST /recorder/start                         POST /recorder/start
 (no sessionId)                               (-s optional)
@@ -142,19 +142,19 @@ The agent does not need that session id to consume the recording. It uses
 are active, **stop** lists each one with its current or last page URL so the
 agent can pick or ask you.
 
-The only session the toolbar must avoid is a **headless or cloud** session,
+The only session the icon menu must avoid is a **headless or cloud** session,
 which has no user tabs. The relay skips those and creates an extension session
 instead.
 
-### Toolbar vs CLI
+### Icon menu vs CLI
 
 | Start from | What happens |
 | --- | --- |
-| In-page **Record** | `POST /recorder/start` with no session id. Never fails just because many sessions exist. |
+| Icon menu **Record skill** | `POST /recorder/start` with no session id. Never fails just because many sessions exist. |
 | `playwriter recorder start` | Reuses the only session, or creates one. Pass `-s <id>` when several sessions exist. |
 | `playwriter recorder start -s 1` | Attaches to session 1. Fails with 409 if that session is already recording. |
 
-The toolbar **Stop** button sends the recording id it started, so it is never
+Icon menu **Stop recording** sends the recording id it started, so it is never
 ambiguous. `playwriter recorder stop` without an id stops the only active
 recording, or errors with URLs if there are several.
 
@@ -184,7 +184,7 @@ playwriter recorder events | jq -r 'select(.type == "network") | [.id, .method, 
 
 ## Multiple recordings
 
-Two recordings can be active at once (toolbar + CLI, or two agents). Stop
+Two recordings can be active at once (icon menu + CLI, or two agents). Stop
 without an id then **throws** and prints enough to choose:
 
 ```
@@ -363,11 +363,11 @@ working parts untouched.
 
 ## Troubleshooting
 
-### Record in the toolbar does nothing, or shows an error toast
+### Record skill does nothing, or shows an error toast
 
-The button talks to `http://127.0.0.1:19988/recorder/start`. Check:
+The menu item attaches the current tab, then calls `http://127.0.0.1:19988/recorder/start`. Check:
 
-1. The extension icon is **green** on that tab
+1. The page is a normal website (not `chrome://` or the Web Store)
 2. The relay is running (`playwriter session list` should respond)
 3. `playwriter logfile` for `Record start endpoint error`
 
@@ -378,8 +378,8 @@ already recording and a new session cannot be created.
 ### `playwriter recorder start` asks for `-s`
 
 The CLI still requires `-s` when several sessions exist, because you are
-choosing a sandbox to attach to. The toolbar does not. Pass `-s` or let the
-user click Record.
+choosing a sandbox to attach to. The icon menu does not. Pass `-s` or let the
+user click **Record skill**.
 
 ### Stop says "Multiple active recordings"
 

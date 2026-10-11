@@ -524,9 +524,7 @@ describe('action recording', () => {
           <p><a id="middle-link" href="/middle-target">Middle link</a></p>
           <p><a id="blank-link" href="/blank-target" target="_blank">Blank link</a></p>
         </body></html>`,
-        // Headless keeps the relocated tab at 400x300; padding keeps the button
-        // below the top-center Playwriter toolbar.
-        '/popup-target': `<!doctype html><html><body style="padding-top:80px"><button id="in-popup">Inside popup</button></body></html>`,
+        '/popup-target': `<!doctype html><html><body><button id="in-popup">Inside popup</button></body></html>`,
         '/mod-target': `<!doctype html><html><body><button id="in-mod">Inside modifier tab</button></body></html>`,
         '/middle-target': `<!doctype html><html><body><h1>Middle target</h1></body></html>`,
         '/blank-target': `<!doctype html><html><body><h1>Blank target</h1></body></html>`,

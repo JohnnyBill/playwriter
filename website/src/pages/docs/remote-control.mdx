@@ -10,7 +10,7 @@ prompt: |
   Use @website/src/pages/docs/security.mdx,
   @website/src/pages/docs/remote-access.mdx,
   @website/src/pages/privacy.mdx, and
-  @extension/src/toolbar/toolbar.ts.
+  @extension/src/share.html and @extension/src/background.ts.
 ---
 
 **Remote control** shares your Chrome with a person or agent. The link is a
@@ -37,7 +37,7 @@ a malicious recipient safe.
    Your Chrome                         playwriter.dev                    Recipient
   ┌──────────────────────┐            ┌────────────────┐            ┌────────────────┐
   │  Playwriter tabs     │            │  Encrypted     │            │  Agent CLI or  │
-  │  Remote ON           │ ──────────> │  tunnel        │ ──────────> │  live viewer   │
+  │  sharing             │ ──────────> │  tunnel        │ ──────────> │  live viewer   │
   │                      │            │  (in memory)   │            │                │
   └──────────────────────┘            └────────────────┘            └────────────────┘
           ^                                                                   │
@@ -46,8 +46,8 @@ a malicious recipient safe.
 
 ## How sharing starts
 
-1. Click **Remote control** in the toolbar
-2. Read the short confirm and optionally **Read more** (this page)
+1. Right-click the Playwriter icon and click **Share browser…**
+2. A small window opens. Read the short confirm and optionally **Read more** (this page)
 3. Click **Share**. Playwriter copies an agent prompt that includes the secret URL
 
 The same URL is also a **live view**. Open it in any browser to watch the tab
@@ -55,8 +55,7 @@ where sharing started.
 
 ## How to revoke
 
-Open the **Remote ON** dropdown in any Playwriter tab and click **Stop
-sharing**. The link dies at once and is never reused. Tabs the agent opened are
+Right-click the Playwriter icon and click **Stop sharing**. The link dies at once and is never reused. Tabs the agent opened are
 detached from Playwriter and left open.
 
 The share also ends if you **close or disconnect the tab where you started it**,
