@@ -456,6 +456,50 @@ describe('CDP Session Tests', () => {
     await page.close()
   }, 60000)
 
+  it('should not break a pending evaluate when a second client connects', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+
+    await serviceWorker.evaluate(async () => {
+      await globalThis.disconnectEverything()
+    })
+
+    const page = await browserContext.newPage()
+    await page.goto('https://example.com/?test=shared-evaluate')
+    await page.bringToFront()
+
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await new Promise((r) => setTimeout(r, 100))
+
+    const browserA = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+    const pageA = browserA
+      .contexts()[0]
+      .pages()
+      .find((p) => p.url().includes('shared-evaluate'))
+    expect(pageA).toBeDefined()
+
+    const pending = pageA!.evaluate(async () => {
+      await new Promise((r) => setTimeout(r, 2000))
+      return 'done'
+    })
+    const pendingResult = pending.then(
+      (value) => ({ value }),
+      (error: Error) => ({ error: error.message.split('\n')[0] }),
+    )
+    await new Promise((r) => setTimeout(r, 200))
+
+    const browserB = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+
+    expect(await pendingResult).toEqual({ value: 'done' })
+    expect(await pageA!.evaluate(() => 1 + 1)).toBe(2)
+
+    await safeCloseCDPBrowser(browserB)
+    await safeCloseCDPBrowser(browserA)
+    await page.close()
+  }, 60000)
+
   it('should return correct targets for multiple pages via Target.getTargets', async () => {
     const browserContext = getBrowserContext()
     const serviceWorker = await getExtensionServiceWorker(browserContext)
