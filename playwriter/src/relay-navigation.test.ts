@@ -875,7 +875,7 @@ describe('Relay Navigation Tests', () => {
         // The extension removes the iframe right before reattaching
         await page.waitForFunction(
           () => {
-            const root = (window as any).__closedRoot as ShadowRoot | undefined
+            const root = (window as any).__closedRoot as { querySelector: (selector: string) => unknown } | undefined
             return !document.querySelector('iframe') && !root?.querySelector('iframe')
           },
           undefined,

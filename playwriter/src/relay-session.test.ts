@@ -815,6 +815,12 @@ describe('CDP Session Tests', () => {
       .find((p) => p.url().includes('example.com'))
     expect(cdpPage).toBeDefined()
 
+    // example.com no longer has an h1, so add our own click target
+    await cdpPage!.evaluate(() => {
+      const heading = document.createElement('h1')
+      heading.textContent = 'Click target'
+      document.body.prepend(heading)
+    })
     const h1Bounds = await cdpPage!.locator('h1').boundingBox()
     expect(h1Bounds).toBeDefined()
     console.log('H1 bounding box:', h1Bounds)

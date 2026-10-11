@@ -295,11 +295,11 @@ describe('Relay Core Tests', () => {
 
     expect(summary).toMatchInlineSnapshot(`
       {
-        "hasBrowserDownloadProgress": true,
-        "hasBrowserDownloadWillBegin": true,
+        "hasBrowserDownloadProgress": false,
+        "hasBrowserDownloadWillBegin": false,
         "hasBrowserSetDownloadBehavior": true,
-        "hasPageDownloadProgress": true,
-        "hasPageDownloadWillBegin": true,
+        "hasPageDownloadProgress": false,
+        "hasPageDownloadWillBegin": false,
         "hasPageSetDownloadBehavior": true,
       }
     `)
@@ -1697,6 +1697,12 @@ describe('Relay Core Tests', () => {
       [2m    - retrying click action[22m
       [2m    - waiting 20ms[22m
       [2m    - waiting for element to be visible, enabled and stable[22m
+      [2m    - element is visible, enabled and stable[22m
+      [2m    - scrolling into view if needed[22m
+      [2m    - done scrolling[22m
+      [2m    - <div id="overlay">Overlay</div> intercepts pointer events[22m
+      [2m  - retrying click action[22m
+      [2m    - waiting 100ms[22m
       ",
             "type": "text",
           },

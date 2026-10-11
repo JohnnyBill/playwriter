@@ -103,37 +103,37 @@ describe('Snapshot & Screenshot Tests', () => {
         params: c.params,
       })),
     ).toMatchInlineSnapshot(`
-          [
-            {
-              "method": "Page.captureScreenshot",
-              "params": {
-                "captureBeyondViewport": false,
-                "clip": {
-                  "height": 720,
-                  "scale": 1,
-                  "width": 1280,
-                  "x": 0,
-                  "y": 0,
-                },
-                "format": "png",
-              },
+      [
+        {
+          "method": "Page.captureScreenshot",
+          "params": {
+            "captureBeyondViewport": false,
+            "clip": {
+              "height": 720,
+              "scale": 1,
+              "width": 1280,
+              "x": 0,
+              "y": 0,
             },
-            {
-              "method": "Page.captureScreenshot",
-              "params": {
-                "captureBeyondViewport": false,
-                "clip": {
-                  "height": 581,
-                  "scale": 1,
-                  "width": 1280,
-                  "x": 0,
-                  "y": 0,
-                },
-                "format": "png",
-              },
+            "format": "png",
+          },
+        },
+        {
+          "method": "Page.captureScreenshot",
+          "params": {
+            "captureBeyondViewport": true,
+            "clip": {
+              "height": 740,
+              "scale": 1,
+              "width": 1280,
+              "x": 0,
+              "y": 0,
             },
-          ]
-        `)
+            "format": "png",
+          },
+        },
+      ]
+    `)
 
     const screenshotPath = path.join(os.tmpdir(), 'playwriter-test-screenshot.png')
     fs.writeFileSync(screenshotPath, viewportScreenshot)
