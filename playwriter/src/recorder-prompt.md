@@ -334,9 +334,10 @@ export interface Product {
 
 export async function listProducts(): Promise<Product[]> {
   // throws a clear "install the Playwriter extension" error if Chrome is not connected.
-  // `await using` closes pages, disconnects and deletes the session at scope end, also on throw.
+  // `await using` disconnects and deletes the session at scope end, also on throw.
   await using connection = await connectViaExtension({ tabGroup: 'directory' })
-  const page = await connection.browser.contexts()[0].newPage()
+  // the connection never closes tabs: `await using page` closes the tab this function opened.
+  await using page = await connection.browser.contexts()[0].newPage()
   await page.goto('https://directory.example.com', { waitUntil: 'domcontentloaded' })
   return await page.evaluate(async () => {
     const res = await fetch('/api/products', { credentials: 'include' })
@@ -350,7 +351,7 @@ Rules:
 
 - `playwriter` must be a dependency of the project that runs `sdk.ts`.
 - Export typed interfaces for every input and return value.
-- Always `await using connection = ...` so it auto-closes. Never leave tabs or sessions open.
+- Always `await using connection = ...` and `await using page = ...` for every tab the SDK opens. The connection does not close tabs. Never leave tabs or sessions open.
 - `fetch` still runs inside `page.evaluate`, same as the JS SDK.
 - Validate by running the SDK with `tsx` or `bun` end-to-end.
 

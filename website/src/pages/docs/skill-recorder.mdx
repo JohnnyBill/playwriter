@@ -288,7 +288,7 @@ import { connectViaExtension } from 'playwriter'
 
 export async function listProducts(): Promise<{ id: string; name: string }[]> {
   await using connection = await connectViaExtension({ tabGroup: 'directory' })
-  const page = await connection.browser.contexts()[0].newPage()
+  await using page = await connection.browser.contexts()[0].newPage() // closes its tab at scope end
   await page.goto('https://directory.example.com', { waitUntil: 'domcontentloaded' })
   return await page.evaluate(async () => {
     const res = await fetch('/api/products', { credentials: 'include' })

@@ -484,13 +484,14 @@ export async function connectViaExtension({
   selectBrowser,
   tabGroup,
   tabGroupColor,
-  closeTabsOnEnd = true,
+  closeTabsOnEnd = false,
   logger,
 }: {
   port?: number
   /**
-   * Close the tabs this connection opened (and popups they opened) on close().
-   * Set false to keep them open, so a later process can reuse them via context.pages().
+   * Also close the tabs this connection opened (and popups they opened) on close().
+   * Off by default: close your own pages with `await using page = await context.newPage()`
+   * or `page.close()`, so tabs shared with other processes are never closed behind their back.
    */
   closeTabsOnEnd?: boolean
   /**

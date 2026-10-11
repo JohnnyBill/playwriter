@@ -107,18 +107,18 @@ await using connection = await connectViaExtension({
   tabGroup: 'email-check',
   tabGroupColor: 'grey',
 })
-const page = await connection.browser.contexts()[0].newPage()
+// the page closes its tab when the scope ends, also on throw
+await using page = await connection.browser.contexts()[0].newPage()
 await page.goto('https://example.com')
-// connection closes automatically when the scope ends, also on throw
 ```
 
-`tabGroupColor` is typed as Chrome's tab group colors. `await using` calls `close()` at scope end: it closes the tabs this connection opened (never other sessions' tabs), disconnects CDP, and deletes the session. Without `await using`, call `await connection.close()` in `finally`.
+`tabGroupColor` is typed as Chrome's tab group colors. `await using` calls `close()` at scope end: it disconnects CDP and deletes the session. It does **not** close tabs: close every tab your script opens with `await using page` or `page.close()`. Pass `closeTabsOnEnd: true` to make `close()` also close the tabs this connection opened (never other sessions' tabs). Without `await using`, call `await connection.close()` in `finally`.
 
-Pass `closeTabsOnEnd: false` to keep the opened tabs after `close()`. A later process can reuse them:
+A tab you do not close stays open, so a later process can reuse it:
 
 ```ts
 // process A
-await using a = await connectViaExtension({ tabGroup: 'job', closeTabsOnEnd: false })
+await using a = await connectViaExtension({ tabGroup: 'job' })
 await (await a.browser.contexts()[0].newPage()).goto('https://example.com')
 
 // process B, later
@@ -126,7 +126,7 @@ await using b = await connectViaExtension({ tabGroup: 'job' })
 const page = b.browser.contexts()[0].pages().findLast((p) => p.url() === 'https://example.com/')
 ```
 
-Tabs that `b` did not open are never closed by `b.close()`. Match tabs by their exact url: `context.pages()` also lists tabs other sessions opened.
+Match tabs by their exact url: `context.pages()` also lists tabs other sessions opened.
 
 Several processes can share one tab for `fetch` calls inside a signed-in site, and the last one closes it. See [Sharing one tab between processes](https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes).
 

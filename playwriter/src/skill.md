@@ -60,15 +60,16 @@ Node programs and TypeScript SDKs use the `playwriter` package as a library. Do 
 ```ts
 import { connectViaExtension } from 'playwriter'
 
-// auto-closes at scope end, also on throw: closes only tabs it opened, deletes the session
+// connection: disconnects and deletes the session at scope end, also on throw. It does NOT close tabs
 await using connection = await connectViaExtension({ tabGroup: 'docs' })
-const page = await connection.browser.contexts()[0].newPage()
+// page: closes the tab this script opened
+await using page = await connection.browser.contexts()[0].newPage()
 await page.goto('https://example.com')
 ```
 
-Pass `closeTabsOnEnd: false` to keep opened tabs after close, so a later process can reuse them via `context.pages()`. Match the tab by its **exact** url (`p.url() === 'https://example.com/app'`), never `startsWith`/`includes`: `context.pages()` also lists tabs other sessions opened for other work.
+**Always** close the tabs your script opens (`await using page` or `page.close()`). A tab you leave open stays in Chrome, so a later process can reuse it via `context.pages()`. Match the tab by its **exact** url (`p.url() === 'https://example.com/app'`), never `startsWith`/`includes`: `context.pages()` also lists tabs other sessions opened for other work. `closeTabsOnEnd: true` makes `close()` also close every tab the session opened.
 
-To share one tab between processes (for example many SDK scripts calling `fetch` inside a signed-in site), never rely on auto-close: it closes the tab when its **creator** session ends, while other processes still use it. Use `closeTabsOnEnd: false`, keep the holder list inside the tab (`window.__shared`, updated with one atomic `page.evaluate`), and let the last holder call `page.close()`. Full example: https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes
+To share one tab between processes (for example many SDK scripts calling `fetch` inside a signed-in site), keep the holder list inside the tab (`window.__shared`, updated with one atomic `page.evaluate`), and let the last holder call `page.close()`. Full example: https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes
 
 With several browsers or profiles connected, pass `selectBrowser: (browsers) => browsers.find((b) => b.email === 'me@work.com')`. Each item has `id` (stable), `browser` (Chrome, Brave, Ghost...), `email`.
 

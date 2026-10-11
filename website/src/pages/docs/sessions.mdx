@@ -137,20 +137,22 @@ await using connection = await connectViaExtension({
   tabGroup: 'email-check',
   tabGroupColor: 'grey',
 })
-const page = await connection.browser.contexts()[0].newPage()
+// the page closes its tab when the scope ends, also on throw
+await using page = await connection.browser.contexts()[0].newPage()
 await page.goto('https://example.com')
-// connection closes automatically when the scope ends, also on throw
 ```
 
-`tabGroupColor` is typed as Chrome's tab group colors: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`. `await using` calls `close()` at scope end: it closes the tabs this connection opened (never other sessions' tabs), disconnects CDP, and deletes the session. It needs Node 24+ (or a TypeScript 5.2+ / tsx build). Without `await using`, call `await connection.close()` in `finally`.
+`tabGroupColor` is typed as Chrome's tab group colors: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`. `await using` calls `close()` at scope end: it disconnects CDP and deletes the session. It needs Node 24+ (or a TypeScript 5.2+ / tsx build). Without `await using`, call `await connection.close()` in `finally`.
+
+**Close your own tabs.** `connection.close()` does not close any tab. Use `await using page` or call `page.close()` for every tab your script opens. Pass `closeTabsOnEnd: true` to make `close()` also close every tab this connection opened, plus popups they opened (never other sessions' tabs).
 
 ### Keeping tabs across processes
 
-Pass `closeTabsOnEnd: false` to keep the opened tabs after `close()`. A later process finds them in `context.pages()`:
+A tab you do not close stays open. A later process finds it in `context.pages()`:
 
 ```ts
 // process A
-await using a = await connectViaExtension({ tabGroup: 'job', closeTabsOnEnd: false })
+await using a = await connectViaExtension({ tabGroup: 'job' })
 await (await a.browser.contexts()[0].newPage()).goto('https://example.com')
 
 // process B, later
@@ -158,15 +160,13 @@ await using b = await connectViaExtension({ tabGroup: 'job' })
 const page = b.browser.contexts()[0].pages().findLast((p) => p.url() === 'https://example.com/')
 ```
 
-`b.close()` never closes tabs that `b` did not open, so the reused tab stays open.
-
 Match tabs by their **exact** url, never `startsWith` or `includes`. `context.pages()` lists every Playwriter tab, also tabs other sessions opened for unrelated work (a download tab, a song page), and a loose match picks one of those.
 
 ### Sharing one tab between processes
 
 Scripts that only call `fetch` inside a signed-in site can share **one tab** instead of each loading the site again. Two rules make it safe:
 
-- Turn off auto-close with `closeTabsOnEnd: false`. Otherwise the tab closes when the session that **created** it ends, while another process still uses it.
+- Never pass `closeTabsOnEnd: true`. It closes the tab when the session that **created** it ends, while another process still uses it.
 - Keep the holder list **inside the tab** with `page.evaluate`. The page runs JS on one thread, so each evaluate is atomic. The **last** holder closes the tab.
 
 ```
@@ -233,11 +233,11 @@ async function claim(connection: PlaywriterBrowserConnection) {
     ready = true
     return page
   } finally {
-    if (!ready) await page.close().catch(() => {}) // auto-close is off: never leak a half-set-up tab
+    if (!ready) await page.close().catch(() => {}) // never leak a half-set-up tab
   }
 }
 
-await using connection = await connectViaExtension({ tabGroup: 'app', closeTabsOnEnd: false })
+await using connection = await connectViaExtension({ tabGroup: 'app' })
 const page = await claim(connection)
 try {
   const user = await page.evaluate(() => fetch('/api/me').then((r) => r.json()))
@@ -248,7 +248,7 @@ try {
 
 - **No race with a closing tab**: the last holder sets `closing` in the same evaluate that empties the list, so a joiner either gets in first or skips that tab and opens a new one.
 - **Ctrl+C**: `finally` does not run when the process is killed by a signal. Handle `SIGINT`/`SIGTERM` by running the same `leave()` first. Holders of crashed processes are dropped by the next `leave()`.
-- **Never navigate or reload** the shared page. It wipes `window.__shared`, and the tab is then never closed. Open your own tab for navigation, and close it yourself, because auto-close is off.
+- **Never navigate or reload** the shared page. It wipes `window.__shared`, and the tab is then never closed. Open your own tab for navigation, and close it yourself.
 - Two processes that start at the same moment with no tab open may both open one. Each tab still closes correctly.
 - The pid check works only for processes on the **same machine**.
 
