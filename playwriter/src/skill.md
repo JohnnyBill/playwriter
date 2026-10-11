@@ -68,7 +68,7 @@ await page.goto('https://example.com')
 
 Pass `closeTabsOnEnd: false` to keep opened tabs after close, so a later process can reuse them via `context.pages()`. Match the tab by its **exact** url (`p.url() === 'https://example.com/app'`), never `startsWith`/`includes`: `context.pages()` also lists tabs other sessions opened for other work.
 
-To share one tab between processes (for example many SDK scripts calling `fetch` inside a signed-in site), never rely on auto-close: it closes the tab when its **creator** session ends, while other processes still use it. Use `closeTabsOnEnd: false`, keep a holder list per tab (`targetId`) in a file under a cross-process lock, and let the last holder call `page.close()`. Full example: https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes
+To share one tab between processes (for example many SDK scripts calling `fetch` inside a signed-in site), never rely on auto-close: it closes the tab when its **creator** session ends, while other processes still use it. Use `closeTabsOnEnd: false`, keep the holder list inside the tab (`window.__shared`, updated with one atomic `page.evaluate`), and let the last holder call `page.close()`. Full example: https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes
 
 With several browsers or profiles connected, pass `selectBrowser: (browsers) => browsers.find((b) => b.email === 'me@work.com')`. Each item has `id` (stable), `browser` (Chrome, Brave, Ghost...), `email`.
 

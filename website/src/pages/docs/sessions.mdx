@@ -167,25 +167,22 @@ Match tabs by their **exact** url, never `startsWith` or `includes`. `context.pa
 Scripts that only call `fetch` inside a signed-in site can share **one tab** instead of each loading the site again. Two rules make it safe:
 
 - Turn off auto-close with `closeTabsOnEnd: false`. Otherwise the tab closes when the session that **created** it ends, while another process still uses it.
-- Keep a holder list per tab in a file. The **last** holder closes the tab.
+- Keep the holder list **inside the tab** with `page.evaluate`. The page runs JS on one thread, so each evaluate is atomic. The **last** holder closes the tab.
 
 ```
-process A ──┐                    ~/.cache/my-sdk/tabs/<targetId>.json  ["pid:uuid", ...]
-process B ──┼──▶ lock ──▶ join tab with exact url (or open it) ──▶ add holder ──▶ unlock
-process C ──┘
-close:      lock ──▶ remove holder, drop dead pids ──▶ empty? ──▶ page.close() ──▶ unlock
+process A ──▶ no tab with exact url ──▶ open it ──▶ window.__shared = { holders: [A] }
+process B ──▶ finds it ──▶ evaluate: closing? no ──▶ holders: [A, B]
+A leaves  ──▶ evaluate: holders: [B]                       tab stays open
+B leaves  ──▶ evaluate: holders: [], closing = true ──▶ page.close()
 ```
 
 ```ts
 import { randomUUID } from 'node:crypto'
-import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { connectViaExtension, getCDPSessionForPage } from 'playwriter'
+import { connectViaExtension, type Page, type PlaywriterBrowserConnection } from 'playwriter'
+
+type Shared = { holders: string[]; closing: boolean }
 
 const APP_URL = 'https://example.com/app' // exact url of the shared tab
-const DIR = path.join(os.homedir(), '.cache', 'my-sdk', 'tabs')
-const LOCK = path.join(DIR, 'lock')
 const me = `${process.pid}:${randomUUID()}`
 
 const alive = (holder: string) => {
@@ -197,64 +194,63 @@ const alive = (holder: string) => {
   }
 }
 
-// cross-process mutex: mkdir is atomic. A lock of a dead pid is taken over
-async function locked<T>(fn: () => Promise<T>): Promise<T> {
-  await fs.mkdir(DIR, { recursive: true })
-  while (!(await fs.mkdir(LOCK).then(() => true, () => false))) {
-    const owner = await fs.readFile(path.join(LOCK, 'pid'), 'utf8').catch(() => '')
-    if (owner && !alive(owner)) await fs.rm(LOCK, { recursive: true, force: true })
-    else await new Promise((r) => setTimeout(r, 100))
+// false when the tab is not set up yet (loading, reloaded), closing, or closed
+const join = (page: Page) =>
+  page
+    .evaluate((me) => {
+      const shared = (window as any).__shared as Shared | undefined
+      if (!shared || shared.closing) return false
+      shared.holders.push(me)
+      return true
+    }, me)
+    .catch(() => false)
+
+// true when we were the last live holder
+async function leave(page: Page) {
+  const holders: string[] = await page.evaluate(() => (window as any).__shared?.holders ?? [])
+  const remove = [me, ...holders.filter((h) => !alive(h))] // crashed processes never block the close
+  return page.evaluate((remove) => {
+    const shared = (window as any).__shared as Shared | undefined
+    if (!shared) return false // list wiped by a reload: never close a tab we cannot account for
+    shared.holders = shared.holders.filter((h) => !remove.includes(h))
+    if (shared.holders.length === 0) shared.closing = true
+    return shared.closing
+  }, remove)
+}
+
+async function claim(connection: PlaywriterBrowserConnection) {
+  const context = connection.browser.contexts()[0]
+  for (const page of context.pages().filter((p) => p.url() === APP_URL)) {
+    if (await join(page)) return page
   }
+  const page = await context.newPage()
+  let ready = false
   try {
-    await fs.writeFile(path.join(LOCK, 'pid'), String(process.pid))
-    return await fn()
+    await page.goto(APP_URL, { waitUntil: 'load' })
+    await page.evaluate((me) => {
+      ;(window as any).__shared = { holders: [me], closing: false } satisfies Shared
+    }, me)
+    ready = true
+    return page
   } finally {
-    await fs.rm(LOCK, { recursive: true, force: true })
+    if (!ready) await page.close().catch(() => {}) // auto-close is off: never leak a half-set-up tab
   }
 }
 
-const file = (id: string) => path.join(DIR, `${id}.json`)
-const holders = async (id: string): Promise<string[]> =>
-  JSON.parse(await fs.readFile(file(id), 'utf8').catch(() => '[]')).filter(alive)
-const save = (id: string, list: string[]) =>
-  list.length ? fs.writeFile(file(id), JSON.stringify(list)) : fs.rm(file(id), { force: true })
-// targetId is stable for the tab's life. It throws once the tab is closed
-const targetId = async (page) =>
-  (await (await getCDPSessionForPage({ page })).send('Target.getTargetInfo')).targetInfo.targetId
-
-const connection = await connectViaExtension({ tabGroup: 'app', closeTabsOnEnd: false })
-const context = connection.browser.contexts()[0]
-const { page, id } = await locked(async () => {
-  for (const page of context.pages().filter((p) => p.url() === APP_URL)) {
-    const id = await targetId(page).catch(() => undefined)
-    if (!id) continue // closed by its last holder right before we got the lock
-    await save(id, [...(await holders(id)), me])
-    return { page, id }
-  }
-  const page = await context.newPage()
-  await page.goto(APP_URL, { waitUntil: 'load' })
-  const id = await targetId(page)
-  await save(id, [me])
-  return { page, id }
-})
-
+await using connection = await connectViaExtension({ tabGroup: 'app', closeTabsOnEnd: false })
+const page = await claim(connection)
 try {
   const user = await page.evaluate(() => fetch('/api/me').then((r) => r.json()))
 } finally {
-  await locked(async () => {
-    const rest = (await holders(id)).filter((h) => h !== me)
-    if (rest.length === 0) await page.close()
-    await save(id, rest)
-  })
-  await connection.close()
+  if (await leave(page).catch(() => false)) await page.close().catch(() => {})
 }
 ```
 
-- **No race with a closing tab**: join and close both run inside the lock. If the last holder closed the tab first, `targetId()` throws for it and the joiner opens a new tab.
-- **Crashed processes** never block the close: holders whose pid is dead are dropped on every read.
-- **Never navigate** the shared page. Other processes are using it. Open your own tab for navigation, and close it yourself, because auto-close is off.
-- Holders are files, so this works only for processes on the **same machine**.
-- Wait for `load`, not `domcontentloaded`, when opening the tab. Some apps navigate again right after the first document loads, and an `evaluate` in that gap fails with "Execution context was destroyed".
+- **No race with a closing tab**: the last holder sets `closing` in the same evaluate that empties the list, so a joiner either gets in first or skips that tab and opens a new one.
+- **Ctrl+C**: `finally` does not run when the process is killed by a signal. Handle `SIGINT`/`SIGTERM` by running the same `leave()` first. Holders of crashed processes are dropped by the next `leave()`.
+- **Never navigate or reload** the shared page. It wipes `window.__shared`, and the tab is then never closed. Open your own tab for navigation, and close it yourself, because auto-close is off.
+- Two processes that start at the same moment with no tab open may both open one. Each tab still closes correctly.
+- The pid check works only for processes on the **same machine**.
 
 ### Choosing a browser
 
