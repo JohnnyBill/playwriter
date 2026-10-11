@@ -1,11 +1,17 @@
 /**
- * Tests viewport sizing and atomic recording file output.
+ * Tests viewport sizing, capture size and ffmpeg argument builders.
  */
 import { describe, test, expect } from 'vitest'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fitToAspectRatio } from './screen-recording.js'
-import { RecordingOutput } from './recording-relay.js'
+import {
+  buildRecordingFfmpegArgs,
+  buildStreamFfmpegArgs,
+  computeCaptureSize,
+  escapeTeeUrl,
+  fitToAspectRatio,
+  parseFfmpegProgressLine,
+  redactStreamUrl,
+  type StreamFfmpegOptions,
+} from './screen-recording.js'
 
 describe('fitToAspectRatio', () => {
   test('common sizes → 16:9', () => {
@@ -112,42 +118,126 @@ describe('fitToAspectRatio', () => {
   })
 })
 
-describe('RecordingOutput', () => {
-  test('keeps output hidden until all chunks are complete', () => {
-    const parent = path.join(process.cwd(), 'tmp')
-    fs.mkdirSync(parent, { recursive: true })
-    const dir = fs.mkdtempSync(path.join(parent, 'recording-output-'))
-    const outputPath = path.join(dir, 'recording.mp4')
+describe('computeCaptureSize', () => {
+  test('retina viewport is capped at maxSize, sizes stay even', () => {
+    expect([
+      computeCaptureSize({ cssWidth: 1280, cssHeight: 720, devicePixelRatio: 2, maxSize: 1920 }),
+      computeCaptureSize({ cssWidth: 1280, cssHeight: 720, devicePixelRatio: 1, maxSize: 1920 }),
+      computeCaptureSize({ cssWidth: 1437, cssHeight: 809, devicePixelRatio: 1, maxSize: 1920 }),
+      computeCaptureSize({ cssWidth: 390, cssHeight: 844, devicePixelRatio: 3, maxSize: 1920 }),
+    ]).toMatchInlineSnapshot(`
+      [
+        {
+          "height": 1080,
+          "width": 1920,
+        },
+        {
+          "height": 720,
+          "width": 1280,
+        },
+        {
+          "height": 810,
+          "width": 1438,
+        },
+        {
+          "height": 1920,
+          "width": 888,
+        },
+      ]
+    `)
+  })
+})
 
-    try {
-      const output = RecordingOutput.open({ outputPath })
-      output.append(Buffer.from('first'))
-      output.append(Buffer.from('-second'))
+describe('buildRecordingFfmpegArgs', () => {
+  const base = { width: 1920, height: 1080, fps: 30 }
+  test('mp4 with x264, hardware encoder, webm', () => {
+    expect([
+      buildRecordingFfmpegArgs({ ...base, audio: false, codec: 'libx264', outputPath: '/out/a.mp4' }).join(' '),
+      buildRecordingFfmpegArgs({ ...base, audio: true, codec: 'h264_videotoolbox', outputPath: '/out/a.mp4' }).join(' '),
+      buildRecordingFfmpegArgs({ ...base, audio: true, codec: 'libvpx', outputPath: '/out/a.webm' }).join(' '),
+    ]).toMatchInlineSnapshot(`
+      [
+        "-hide_banner -loglevel error -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p -c:v libx264 -preset veryfast -crf 20 -movflags +faststart -y /out/a.mp4",
+        "-hide_banner -loglevel error -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -f s16le -ar 48000 -ac 2 -thread_queue_size 512 -i pipe:3 -vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p -c:v h264_videotoolbox -b:v 6221k -realtime true -c:a aac -b:a 160k -movflags +faststart -y /out/a.mp4",
+        "-hide_banner -loglevel error -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -f s16le -ar 48000 -ac 2 -thread_queue_size 512 -i pipe:3 -vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p -c:v libvpx -deadline realtime -cpu-used 8 -b:v 6221k -crf 10 -c:a libopus -b:a 128k -y /out/a.webm",
+      ]
+    `)
+  })
+})
 
-      expect(fs.existsSync(outputPath)).toBe(false)
-      expect(output.finish()).toEqual({ path: outputPath, size: 12 })
-      expect(fs.readFileSync(outputPath, 'utf8')).toBe('first-second')
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true })
-    }
+describe('buildStreamFfmpegArgs', () => {
+  const base: StreamFfmpegOptions = {
+    rtmpUrls: ['rtmp://va.pscp.tv:80/x/streamkey'],
+    width: 1280,
+    height: 720,
+    fps: 30,
+    videoBitrateKbps: 4500,
+    audioBitrateKbps: 128,
+    audio: true,
+    preset: 'veryfast',
+    codec: 'libx264',
+    keyframeSeconds: 3,
+  }
+
+  test('page audio, silent audio, hardware encoder', () => {
+    expect([
+      buildStreamFfmpegArgs(base).join(' '),
+      buildStreamFfmpegArgs({ ...base, audio: false }).join(' '),
+      buildStreamFfmpegArgs({ ...base, codec: 'h264_videotoolbox' }).join(' '),
+    ]).toMatchInlineSnapshot(`
+      [
+        "-hide_banner -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -f s16le -ar 48000 -ac 2 -thread_queue_size 512 -i pipe:3 -map 0:v:0 -map 1:a:0 -vf scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p -r 30 -c:v libx264 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 90 -keyint_min 90 -preset veryfast -tune zerolatency -sc_threshold 0 -c:a aac -b:a 128k -ar 44100 -ac 2 -f flv rtmp://va.pscp.tv:80/x/streamkey",
+        "-hide_banner -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -f lavfi -i anullsrc=r=44100:cl=stereo -map 0:v:0 -map 1:a:0 -shortest -vf scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p -r 30 -c:v libx264 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 90 -keyint_min 90 -preset veryfast -tune zerolatency -sc_threshold 0 -c:a aac -b:a 128k -ar 44100 -ac 2 -f flv rtmp://va.pscp.tv:80/x/streamkey",
+        "-hide_banner -nostdin -f image2pipe -c:v mjpeg -framerate 30 -thread_queue_size 512 -i pipe:0 -f s16le -ar 48000 -ac 2 -thread_queue_size 512 -i pipe:3 -map 0:v:0 -map 1:a:0 -vf scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p -r 30 -c:v h264_videotoolbox -b:v 4500k -maxrate 4500k -bufsize 9000k -g 90 -keyint_min 90 -realtime true -c:a aac -b:a 128k -ar 44100 -ac 2 -f flv rtmp://va.pscp.tv:80/x/streamkey",
+      ]
+    `)
   })
 
-  test('removes partial output after cancellation', () => {
-    const parent = path.join(process.cwd(), 'tmp')
-    fs.mkdirSync(parent, { recursive: true })
-    const dir = fs.mkdtempSync(path.join(parent, 'recording-output-'))
-    const outputPath = path.join(dir, 'recording.mp4')
+  test('multi destination uses tee muxer with onfail=ignore', () => {
+    const args = buildStreamFfmpegArgs({
+      ...base,
+      rtmpUrls: ['rtmp://live.twitch.tv/app/key1', 'rtmp://va.pscp.tv:80/x/key2'],
+    })
+    expect(args.slice(-7).join(' ')).toMatchInlineSnapshot(`"-f tee -use_fifo 1 -fifo_options attempt_recovery=1:recover_any_error=1 [f=flv:onfail=ignore]rtmp://live.twitch.tv/app/key1|[f=flv:onfail=ignore]rtmp://va.pscp.tv:80/x/key2"`)
+  })
 
-    try {
-      const output = RecordingOutput.open({ outputPath })
-      output.append(Buffer.from('partial'))
-      const temporaryPath = output.temporaryPath
-      output.cancel()
+  test('throws without destinations', () => {
+    expect(() => {
+      buildStreamFfmpegArgs({ ...base, rtmpUrls: [] })
+    }).toThrowErrorMatchingInlineSnapshot(`[Error: At least one RTMP destination is required]`)
+  })
+})
 
-      expect(fs.existsSync(outputPath)).toBe(false)
-      expect(fs.existsSync(temporaryPath)).toBe(false)
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true })
-    }
+describe('stream url helpers', () => {
+  test('escapeTeeUrl and redactStreamUrl', () => {
+    expect([
+      escapeTeeUrl('rtmp://host/app/key|with[brackets]'),
+      redactStreamUrl('rtmp://live.twitch.tv/app/live_123456_SECRET'),
+      redactStreamUrl('rtmps://va.pscp.tv:443/x/SECRETKEY'),
+      redactStreamUrl('/tmp/out.flv'),
+    ]).toMatchInlineSnapshot(`
+      [
+        "rtmp://host/app/key\\|with\\[brackets\\]",
+        "rtmp://live.twitch.tv/…",
+        "rtmps://va.pscp.tv:443/…",
+        "/tmp/out.flv",
+      ]
+    `)
+  })
+
+  test('parseFfmpegProgressLine', () => {
+    expect([
+      parseFfmpegProgressLine('frame=  123 fps= 30 q=28.0 size=    1024KiB time=00:00:04.10 bitrate=2045.6kbits/s drop=2 speed=1.01x'),
+      parseFfmpegProgressLine('[flv @ 0x7f8] Failed to update header'),
+    ]).toMatchInlineSnapshot(`
+      [
+        {
+          "bitrateKbps": 2045.6,
+          "droppedFrames": 2,
+          "fps": 30,
+        },
+        null,
+      ]
+    `)
   })
 })

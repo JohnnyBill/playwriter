@@ -89,7 +89,6 @@ cli
         console.log(`  Extension: ${extensionPath}`)
         console.log(`  Profile: ${userDataDir}`)
         console.log(`  Mode: ${headless ? 'headless' : 'headed'}`)
-        console.log('  Permissions: recording/tabCapture flags enabled')
 
         if (connectedExtensions.length > 0) {
           console.log('Playwriter extension connected to the relay server.')
@@ -513,7 +512,6 @@ cli
         const result = (await response.json()) as { id: string; warning?: string | null }
         printSessionWarning(result)
         printSessionCreated(`Session ${result.id} created (headless). Use with: playwriter -s ${result.id} -e "..."`)
-        console.log(pc.dim('NOTE: Recording unavailable in headless mode.'))
       } catch (error: any) {
         if (error.message?.includes('Could not find a supported browser binary')) {
           console.error('No Chrome browser found. Install one first:')
@@ -549,7 +547,6 @@ cli
       const result = await createDirectSession({ serverUrl, cdpEndpoint, token: options.token })
       printSessionWarning(result)
       printSessionCreated(`Session ${result.id} created (direct CDP). Use with: playwriter -s ${result.id} -e "..."`)
-      console.log(pc.dim('NOTE: Recording unavailable in direct CDP mode.'))
       return
     }
 
@@ -584,7 +581,6 @@ cli
         printSessionCreated(
           `Session ${result.id} created (direct CDP, ${instance.browser}${profileLabel}). Use with: playwriter -s ${result.id} -e "..."`,
         )
-        console.log(pc.dim('NOTE: Recording unavailable in direct CDP mode.'))
         return
       }
 
@@ -607,7 +603,6 @@ cli
         const result = await createDirectSession({ serverUrl, cdpEndpoint: selected.wsUrl!, browser: selected.browser, profiles: selected.profiles, token: options.token })
         printSessionWarning(result)
         printSessionCreated(`Session ${result.id} created (direct CDP). Use with: playwriter -s ${result.id} -e "..."`)
-        console.log(pc.dim('NOTE: Recording unavailable in direct CDP mode.'))
         return
       }
 
@@ -809,7 +804,6 @@ cli
           const result = await createDirectSession({ serverUrl, cdpEndpoint: selected.wsUrl!, browser: selected.browser, profiles: selected.profiles, token: options.token })
           printSessionWarning(result)
           printSessionCreated(`Session ${result.id} created (direct CDP). Use with: playwriter -s ${result.id} -e "..."`)
-          console.log(pc.dim('NOTE: Recording unavailable in direct CDP mode.'))
         } else {
           const cwd = process.cwd()
           const response = await fetch(`${serverUrl}/cli/session/new`, {
@@ -1470,9 +1464,9 @@ cli
 
 // ============================================================================
 // Live RTMP streaming commands. These are sugar over the executor `stream`
-// global (same execute path as -e), which streams the session's state.page
-// and calls the relay's /stream/* endpoints. ffmpeg runs inside the relay
-// process, so the stream keeps running after the CLI exits.
+// global (same execute path as -e), which streams the session's state.page.
+// The executor and ffmpeg run in the relay process, so the stream keeps running
+// after the CLI exits. It ends when the page closes or the session is reset.
 // ============================================================================
 
 cli
@@ -1486,7 +1480,7 @@ cli
   .option('--video-bitrate <kbps>', z.number().default(9000).describe('Video bitrate in kbps (default is X Live recommended; Twitch max 6000)'))
   .option('--audio-bitrate <kbps>', z.number().default(128).describe('Audio bitrate in kbps'))
   .option('--keyframe-interval <seconds>', z.number().default(3).describe('Keyframe interval in seconds (3 = X Live recommended, 2 = Twitch)'))
-  .option('--no-audio', 'Do not capture tab audio (a silent track is injected, required by X Live)')
+  .option('--no-audio', 'Do not capture page audio (a silent track is sent, required by X Live)')
   .option('--preset <name>', z.string().default('veryfast').describe('x264 preset (only applies to libx264)'))
   .option('--codec <name>', 'Video codec for ffmpeg (default: auto-detect hardware encoder, falls back to libx264)')
   .action(async (options) => {
@@ -1518,12 +1512,10 @@ cli
       codec: options.codec,
     }
 
-    // Run through the executor so the session's current tab is resolved and
-    // ffmpeg is spawned inside the relay process (survives CLI exit).
     const code = [
       `if (!state.page || state.page.isClosed()) throw new Error('Set state.page first, e.g. playwriter -s <session> -e "state.page = await context.newPage(); await state.page.goto(url)"')`,
       `const result = await stream.start({ page: state.page, ...${JSON.stringify(streamParams)} })`,
-      `console.log('Streaming tab ' + result.tabId + ' to: ' + result.destinations.join(', '))`,
+      `console.log('Streaming to: ' + result.destinations.join(', '))`,
       `console.log('The stream runs until you call: playwriter stream stop -s <session>')`,
     ].join('\n')
 
@@ -1545,7 +1537,7 @@ cli
     const code = [
       `const target = state.page && !state.page.isClosed() ? { page: state.page } : undefined`,
       `const result = await stream.stop(target)`,
-      `console.log('Stream stopped after ' + Math.round(result.duration / 1000) + 's (' + result.bytesReceived + ' bytes captured)')`,
+      `console.log('Stream stopped after ' + Math.round(result.duration / 1000) + 's (' + result.frames + ' frames)')`,
     ].join('\n')
 
     await executeCode({
@@ -1567,12 +1559,11 @@ cli
       `const target = state.page && !state.page.isClosed() ? { page: state.page } : undefined`,
       `const status = await stream.status(target)`,
       `if (!status.streaming) {`,
-      `  const errorLabel = status.tabId ? 'Last stream error: ' : ''`,
-      `  console.log('Not streaming' + (status.error ? '. ' + errorLabel + status.error : ''))`,
+      `  console.log('Not streaming' + (status.error ? '. Last stream error: ' + status.error : ''))`,
       `} else {`,
       `  const uptime = Math.round((Date.now() - status.startedAt) / 1000)`,
-      `  console.log('Streaming tab ' + status.tabId + ' to: ' + status.destinations.join(', '))`,
-      `  console.log('Uptime: ' + uptime + 's, received: ' + status.stats.bytesReceived + ' bytes (' + status.stats.chunksReceived + ' chunks)')`,
+      `  console.log('Streaming to: ' + status.destinations.join(', '))`,
+      `  console.log('Uptime: ' + uptime + 's, frames: ' + status.stats.videoFrames + ' sent, ' + status.stats.capturedFrames + ' captured, audio chunks: ' + status.stats.audioChunks)`,
       `  if (status.stats.ffmpegFps !== undefined) {`,
       `    console.log('Encoder: ' + status.stats.ffmpegFps + ' fps, ' + (status.stats.ffmpegBitrateKbps || '?') + ' kbps, dropped: ' + (status.stats.droppedFrames ?? 0))`,
       `  }`,

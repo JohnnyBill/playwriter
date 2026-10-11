@@ -146,14 +146,30 @@ export function buildStableExtensionKey(info: ExtensionInfo, connectionId: strin
   return `connection:${connectionId}`
 }
 
-/** Find which extension owns a CDP tab sessionId (e.g. "pw-tab-1"). */
-export function findExtensionIdByCdpSession(state: RelayState, cdpSessionId: string): string | null {
-  for (const [connectionId, ext] of state.extensions.entries()) {
-    if (ext.connectedTargets.has(cdpSessionId)) {
-      return connectionId
-    }
+/**
+ * Chrome has one screencast per tab, shared by every CDP client on it. Merge
+ * the params of all clients so each gets at least what it asked for: jpeg if
+ * anyone wants jpeg, highest quality, largest max size, every frame anyone needs.
+ */
+export function mergeScreencastParams(
+  list: Protocol.Page.StartScreencastRequest[],
+): Protocol.Page.StartScreencastRequest {
+  const maxOrUnlimited = (values: Array<number | undefined>) => {
+    return values.some((value) => value === undefined) ? undefined : Math.max(...(values as number[]))
   }
-  return null
+  const qualities = list.flatMap((params) => {
+    return params.quality === undefined ? [] : [params.quality]
+  })
+  const merged: Protocol.Page.StartScreencastRequest = {
+    format: list.some((params) => params.format === 'jpeg') ? 'jpeg' : 'png',
+    quality: qualities.length > 0 ? Math.max(...qualities) : undefined,
+    maxWidth: maxOrUnlimited(list.map((params) => params.maxWidth)),
+    maxHeight: maxOrUnlimited(list.map((params) => params.maxHeight)),
+    everyNthFrame: Math.min(...list.map((params) => params.everyNthFrame || 1)),
+  }
+  return Object.fromEntries(
+    Object.entries(merged).filter(([, value]) => value !== undefined),
+  ) as Protocol.Page.StartScreencastRequest
 }
 
 // ---------------------------------------------------------------------------

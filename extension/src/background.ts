@@ -54,15 +54,6 @@ import ghostCursorBundleCode from '../../playwriter/dist/ghost-cursor-client.js?
 // Bippy: React fiber introspection library, used for "Copy React Source Path" context menu.
 // Built by playwriter/scripts/build-client-bundles.ts, exposes globalThis.__bippy
 import bippyBundleCode from '../../playwriter/dist/bippy.js?raw'
-import {
-  getActiveRecordings,
-  handleStartRecording,
-  handleStopRecording,
-  handleIsRecording,
-  handleCancelRecording,
-  cleanupRecordingForTab,
-  ensureOffscreenDocument,
-} from './recording'
 import type { OffscreenCopyTextResult, OffscreenPlaySoundResult, SoundName } from './offscreen-types'
 
 function isTruthy<T>(value: T): value is NonNullable<T> {
@@ -299,7 +290,6 @@ let tabGroupQueue: Promise<void> = Promise.resolve()
 // This ensures Playwright can build the iframe frame tree when connecting over CDP.
 let autoAttachParams: Protocol.Target.SetAutoAttachRequest | null = null
 
-const MAX_RECORDING_SOCKET_BUFFERED_BYTES = 16 * 1024 * 1024
 
 // ============================================================================
 // Remote control: share the browser with a remote agent through a playwriter.dev
@@ -356,67 +346,6 @@ function markAllTabsConnecting(tabs: Map<number, TabInfo>): Map<number, TabInfo>
       return [tabId, { ...tab, state: 'connecting' as const }]
     }),
   )
-}
-
-export function sendRecordingCancellation(tabId: number): void {
-  const ws = connectionManager.ws
-  if (ws?.readyState !== WebSocket.OPEN) {
-    return
-  }
-  ws.send(
-    JSON.stringify({
-      method: 'recordingCancelled',
-      params: { tabId },
-    }),
-  )
-}
-
-function cancelRecordingTransport({ tabId, error }: { tabId: number; error: string }): void {
-  logger.error(`Cancelling recording transport for tab ${tabId}: ${error}`)
-  sendRecordingCancellation(tabId)
-  void chrome.runtime.sendMessage({ action: 'cancelRecording', tabId }).catch(() => {})
-}
-
-function sendRecordingChunk({
-  tabId,
-  data,
-  final,
-}: {
-  tabId: number
-  data?: Uint8Array
-  final?: boolean
-}): { success: boolean; error?: string } {
-  const ws = connectionManager.ws
-  if (ws?.readyState !== WebSocket.OPEN) {
-    const error = 'Relay is not connected'
-    cancelRecordingTransport({ tabId, error })
-    return { success: false, error }
-  }
-  const wireBytes = (data?.byteLength || 0) + 256
-  if (ws.bufferedAmount + wireBytes > MAX_RECORDING_SOCKET_BUFFERED_BYTES) {
-    const error = 'Recording socket buffer exceeded its memory limit'
-    cancelRecordingTransport({ tabId, error })
-    return { success: false, error }
-  }
-  ws.send(
-    JSON.stringify({
-      method: 'recordingData',
-      params: { tabId, final },
-    }),
-  )
-  if (data && !final) {
-    ws.send(data)
-  }
-  return { success: true }
-}
-
-function decodeRecordingChunk(value: string): Uint8Array {
-  const binary = atob(value)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return bytes
 }
 
 class ConnectionManager {
@@ -933,7 +862,7 @@ async function dispatchRelayMessage(message: any, sink: RelayMessageSink): Promi
     return
   }
 
-  // Tunneled relays cannot use recording or Ghost Browser APIs.
+  // Tunneled relays cannot close session tabs or use Ghost Browser APIs.
   if (sink.remoteRuntime) {
     const rejection = getRemoteExtensionMethodRejection(message.method)
     if (rejection) {
@@ -1139,51 +1068,6 @@ async function dispatchRelayMessage(message: any, sink: RelayMessageSink): Promi
       .catch((e) => {
         logger.debug('updateTabGroup queue error:', e)
       })
-    return
-  }
-
-  // Handle recording commands
-  if (message.method === 'startRecording') {
-    try {
-      const result = await handleStartRecording(message.params)
-      sink.send({ id: message.id, result })
-    } catch (error: any) {
-      logger.error('Failed to start recording:', error)
-      sink.send({ id: message.id, result: { success: false, error: error.message } })
-    }
-    return
-  }
-
-  if (message.method === 'stopRecording') {
-    try {
-      const result = await handleStopRecording(message.params)
-      sink.send({ id: message.id, result })
-    } catch (error: any) {
-      logger.error('Failed to stop recording:', error)
-      sink.send({ id: message.id, result: { success: false, error: error.message } })
-    }
-    return
-  }
-
-  if (message.method === 'isRecording') {
-    try {
-      const result = await handleIsRecording(message.params)
-      sink.send({ id: message.id, result })
-    } catch (error: any) {
-      logger.error('Failed to check recording status:', error)
-      sink.send({ id: message.id, result: { isRecording: false } })
-    }
-    return
-  }
-
-  if (message.method === 'cancelRecording') {
-    try {
-      const result = await handleCancelRecording(message.params)
-      sink.send({ id: message.id, result })
-    } catch (error: any) {
-      logger.error('Failed to cancel recording:', error)
-      sink.send({ id: message.id, result: { success: false, error: error.message } })
-    }
     return
   }
 
@@ -2089,7 +1973,6 @@ async function attachTabDebugger(
         groupTitle: state.tabs.get(tabId)?.groupTitle,
         groupKey: state.tabs.get(tabId)?.groupKey,
         groupColor: state.tabs.get(tabId)?.groupColor,
-        isRecording: reusedTab?.isRecording,
       })
       return { tabs: newTabs, connectionState: 'connected', errorText: undefined }
     })
@@ -2138,9 +2021,6 @@ function detachTab(tabId: number, shouldDetachDebugger: boolean): void {
     logger.debug('detachTab: tab not found in map:', tabId)
     return
   }
-
-  // Clean up any active recording for this tab
-  void cleanupRecordingForTab(tabId)
 
   void chrome.scripting
     .executeScript({
@@ -3863,6 +3743,32 @@ async function copyReactSource(options: { info: chrome.contextMenus.OnClickData;
 // Sync icons on first load
 void updateIcons()
 
+// Offscreen document: clipboard writes and menu sounds (service workers have neither)
+let offscreenDocumentCreating: Promise<void> | null = null
+
+async function ensureOffscreenDocument(): Promise<void> {
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+    documentUrls: [chrome.runtime.getURL('src/offscreen.html')],
+  })
+  if (existingContexts.length > 0) {
+    return
+  }
+  if (offscreenDocumentCreating) {
+    return offscreenDocumentCreating
+  }
+  offscreenDocumentCreating = chrome.offscreen.createDocument({
+    url: 'src/offscreen.html',
+    reasons: [chrome.offscreen.Reason.CLIPBOARD, chrome.offscreen.Reason.AUDIO_PLAYBACK],
+    justification: 'Copy prompts to the clipboard and play menu action sounds',
+  })
+  try {
+    await offscreenDocumentCreating
+  } finally {
+    offscreenDocumentCreating = null
+  }
+}
+
 async function copyTextInOffscreenDocument(text: string): Promise<void> {
   await ensureOffscreenDocument()
   const result: OffscreenCopyTextResult = await chrome.runtime.sendMessage({ action: 'copyText', text })
@@ -3886,7 +3792,7 @@ function playSound(sound: SoundName): void {
     })
 }
 
-// Handle messages from share.html (Remote control) and the offscreen document (recording chunks)
+// Handle messages from share.html (Remote control)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Sent by share.html after the user confirms Remote control.
   if (message.action === 'remoteControlStart') {
@@ -3917,39 +3823,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: error.message })
       },
     )
-    return true
-  }
-
-  if (message.action === 'recordingChunk') {
-    try {
-      const result = sendRecordingChunk({
-        tabId: message.tabId,
-        data: typeof message.dataBase64 === 'string' ? decodeRecordingChunk(message.dataBase64) : undefined,
-        final: message.final,
-      })
-      sendResponse(result)
-    } catch (error) {
-      sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) })
-    }
-    return true
-  }
-
-  if (message.action === 'recordingCancelled') {
-    const { tabId } = message
-
-    getActiveRecordings().delete(tabId)
-    store.setState((state) => {
-      const newTabs = new Map(state.tabs)
-      const existing = newTabs.get(tabId)
-      if (existing) {
-        newTabs.set(tabId, { ...existing, isRecording: false })
-      }
-      return { tabs: newTabs }
-    })
-
-    sendRecordingCancellation(tabId)
-
-    sendResponse({ success: true })
     return true
   }
 

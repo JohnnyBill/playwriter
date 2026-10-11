@@ -1591,10 +1591,6 @@ export class PlaywrightExecutor {
         })
       }
 
-      // Screen recording functions (via chrome.tabCapture in extension - survives navigation)
-      // Recording uses chrome.tabCapture which requires activeTab permission.
-      // This permission is granted when the user clicks the Playwriter extension icon on a tab.
-      const relayPort = this.cdpConfig.port || 19988
       const self = this
       const ghostCursorController = this.ghostCursorController
 
@@ -1617,10 +1613,19 @@ export class PlaywrightExecutor {
         await ghostCursorController.hide({ page: targetPage })
       }
 
+      // Screen recording and RTMP streaming via CDP screencast (screen-recording.ts)
+      const captureLogger = {
+        log: (...args: unknown[]) => {
+          this.logger.log('[playwriter]', ...args)
+        },
+        error: (...args: unknown[]) => {
+          this.logger.error('[playwriter]', ...args)
+        },
+      }
       const recordingApi = createRecordingApi({
         context,
-        relayPort,
         ghostCursorController,
+        logger: captureLogger,
         onStart: () => {
           self.recordingStartedAt = Date.now()
           self.executionTimestamps = []
@@ -1634,9 +1639,7 @@ export class PlaywrightExecutor {
         },
       })
 
-      // Live RTMP streaming: pipes tabCapture chunks to ffmpeg in the relay
-      // process. Streams keep running after execute() returns and CLI exits.
-      const streamApi = createStreamApi({ relayPort })
+      const streamApi = createStreamApi({ logger: captureLogger })
 
       // Ghost Browser API - creates chrome object that mirrors Ghost Browser's APIs
       // See extension/src/ghost-browser-api.d.ts for full API documentation

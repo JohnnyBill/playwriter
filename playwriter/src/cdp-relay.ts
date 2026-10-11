@@ -9,14 +9,6 @@ import type { CDPCommand, CDPResponseBase, CDPEventBase, CDPEventFor, RelayServe
 import type {
   ExtensionMessage,
   ExtensionEventMessage,
-  RecordingDataMessage,
-  RecordingCancelledMessage,
-  StartRecordingBody,
-  StopRecordingParams,
-  CancelRecordingParams,
-  IsRecordingParams,
-  StartStreamParams,
-  StopStreamParams,
   UpdateTabGroupResult,
   CloseTabsForKeyResult,
 } from './protocol.js'
@@ -42,8 +34,6 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { VERSION, EXTENSION_IDS } from './utils.js'
 import { createCdpLogger, type CdpLogEntry, type CdpLogger } from './cdp-log.js'
-import { RecordingRelay } from './recording-relay.js'
-import { StreamRelay } from './stream-relay.js'
 import { appendSessionToWsUrl } from './chrome-discovery.js'
 import * as relayState from './relay-state.js'
 import { WebSocket as NodeWebSocket } from 'ws'
@@ -493,74 +483,6 @@ export async function startPlayWriterCDPRelayServer({
     })
   }
 
-  const recordingRelays = new Map<string, RecordingRelay>()
-
-  // Find which extension connection owns a CDP tab session ID (pw-tab-*).
-  // Used by recording routes where sessionId identifies the target tab.
-  // Delegates to the pure derivation function from relay-state.ts.
-  const findExtensionIdByCdpSession = (cdpSessionId: string): string | null => {
-    return relayState.findExtensionIdByCdpSession(store.getState(), cdpSessionId)
-  }
-
-  // Resolve recording route session ID (CDP tab session) to extension connection.
-  const resolveRecordingRoute = async ({
-    sessionId,
-  }: {
-    sessionId: string | null
-  }): Promise<{
-    extensionId: string | null
-    sessionId: string | null
-  }> => {
-    if (!sessionId) {
-      return { extensionId: null, sessionId: null }
-    }
-
-    const extensionId = findExtensionIdByCdpSession(sessionId)
-    return { extensionId, sessionId }
-  }
-
-  const getRecordingRelay = (extensionId?: string | null): RecordingRelay | null => {
-    const allowDefault = !extensionId && relayState.getLocalExtensions(store.getState()).length === 1
-    const conn = getExtensionConnection(extensionId, { allowFallback: allowDefault })
-    if (!conn) {
-      return null
-    }
-    const connId = conn.id
-    if (!recordingRelays.has(connId)) {
-      recordingRelays.set(
-        connId,
-        new RecordingRelay({
-          sendToExtension: (params) => sendToExtension({ extensionId: connId, ...params }),
-          isExtensionConnected: () => store.getState().extensions.has(connId),
-          logger,
-        }),
-      )
-    }
-    return recordingRelays.get(connId) || null
-  }
-
-  const streamRelays = new Map<string, StreamRelay>()
-
-  const getStreamRelay = (extensionId?: string | null): StreamRelay | null => {
-    const allowDefault = !extensionId && relayState.getLocalExtensions(store.getState()).length === 1
-    const conn = getExtensionConnection(extensionId, { allowFallback: allowDefault })
-    if (!conn) {
-      return null
-    }
-    const connId = conn.id
-    if (!streamRelays.has(connId)) {
-      streamRelays.set(
-        connId,
-        new StreamRelay({
-          sendToExtension: (params) => sendToExtension({ extensionId: connId, ...params }),
-          isExtensionConnected: () => store.getState().extensions.has(connId),
-          logger,
-        }),
-      )
-    }
-    return streamRelays.get(connId) || null
-  }
-
   function getPageTargetSessionIds({ extensionId }: { extensionId: string }): string[] {
     const extensionState = store.getState().extensions.get(extensionId)
     if (!extensionState) {
@@ -645,6 +567,60 @@ export async function startPlayWriterCDPRelayServer({
         }
       }),
     )
+  }
+
+  // Page.startScreencast is per tab, not per CDP client. Without merging, one
+  // client's stopScreencast (video recording, skill recorder) silently stops
+  // the others' frames. Each client keeps its params; Chrome gets the merged set,
+  // and stop is forwarded only when no client is left.
+  // Remote-control viewers talk to the extension directly and are not merged.
+  const screencasts = new Map<
+    string,
+    { extensionId: string; sessionId: string; clients: Map<string, Protocol.Page.StartScreencastRequest> }
+  >()
+
+  async function applyScreencast({
+    extensionId,
+    sessionId,
+    source,
+  }: {
+    extensionId: string
+    sessionId: string
+    source?: CDPCommand['source']
+  }): Promise<void> {
+    const key = `${extensionId}\0${sessionId}`
+    const clients = screencasts.get(key)?.clients
+    if (!clients || clients.size === 0) {
+      screencasts.delete(key)
+      await sendToExtension({
+        extensionId,
+        method: 'forwardCDPCommand',
+        params: { sessionId, method: 'Page.stopScreencast', params: {}, source },
+      })
+      return
+    }
+    await sendToExtension({
+      extensionId,
+      method: 'forwardCDPCommand',
+      params: {
+        sessionId,
+        method: 'Page.startScreencast',
+        params: relayState.mergeScreencastParams([...clients.values()]),
+        source,
+      },
+    })
+  }
+
+  function releaseClientScreencasts(clientId: string): void {
+    Array.from(screencasts.values())
+      .filter((entry) => {
+        return entry.clients.delete(clientId)
+      })
+      .forEach(({ extensionId, sessionId }) => {
+        applyScreencast({ extensionId, sessionId }).catch((error) => {
+          logger?.log(pc.yellow(`[Server] Failed to update screencast for ${sessionId}: ${String(error)}`))
+        })
+      })
   }
 
   async function routeCdpCommand({
@@ -842,6 +818,23 @@ export async function startPlayWriterCDPRelayServer({
         // 3. remove class
         await sendToExtension(evalCmd(`document.documentElement.classList.remove('playwriter-screenshot')`)).catch(() => {})
         return result
+      }
+
+      case 'Page.startScreencast':
+      case 'Page.stopScreencast': {
+        if (!sessionId || !clientId || !resolvedExtensionId) {
+          break
+        }
+        const key = `${resolvedExtensionId}\0${sessionId}`
+        const entry = screencasts.get(key) || { extensionId: resolvedExtensionId, sessionId, clients: new Map() }
+        screencasts.set(key, entry)
+        if (method === 'Page.startScreencast') {
+          entry.clients.set(clientId, (params || {}) as Protocol.Page.StartScreencastRequest)
+        } else {
+          entry.clients.delete(clientId)
+        }
+        await applyScreencast({ extensionId: resolvedExtensionId, sessionId, source })
+        return {}
       }
 
       case 'Runtime.enable': {
@@ -1415,6 +1408,7 @@ export async function startPlayWriterCDPRelayServer({
         },
 
         onClose() {
+          releaseClientScreencasts(clientId)
           store.setState((s) => relayState.removePlaywrightClient(s, { clientId }))
           logger?.log(pc.yellow(`Playwright client disconnected: ${clientId} (${store.getState().playwrightClients.size} remaining)`))
         },
@@ -1574,20 +1568,9 @@ export async function startPlayWriterCDPRelayServer({
             ws.close(1000, 'Extension not registered')
             return
           }
-          // Handle binary data (capture chunks). Streams and recordings share
-          // the same WS messages; StreamRelay gets first pick and returns true
-          // when the chunk belongs to an active stream (tabId sets are disjoint
-          // because the extension refuses a second capture of the same tab).
+          // Old extensions sent tab-capture chunks as binary frames. Recording now
+          // uses CDP screencast, so binary frames are ignored.
           if (data instanceof ArrayBuffer || Buffer.isBuffer(data)) {
-            const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
-            const streamRelay = streamRelays.get(connectionId)
-            if (streamRelay?.handleBinaryData(buffer)) {
-              return
-            }
-            const relay = getRecordingRelay(connectionId)
-            if (relay) {
-              relay.handleBinaryData(buffer)
-            }
             return
           }
 
@@ -1673,22 +1656,6 @@ export async function startPlayWriterCDPRelayServer({
             const logFunc = logFn || logger?.log
             const prefix = pc.yellow(`[Extension] [${level.toUpperCase()}]`)
             logFunc?.(prefix, ...args)
-          } else if (message.method === 'recordingData') {
-            const streamRelay = streamRelays.get(connectionId)
-            if (!streamRelay?.handleRecordingData(message)) {
-              const relay = getRecordingRelay(connectionId)
-              if (relay) {
-                relay.handleRecordingData(message)
-              }
-            }
-          } else if (message.method === 'recordingCancelled') {
-            const streamRelay = streamRelays.get(connectionId)
-            if (!streamRelay?.handleRecordingCancelled(message)) {
-              const relay = getRecordingRelay(connectionId)
-              if (relay) {
-                relay.handleRecordingCancelled(message)
-              }
-            }
           } else {
             const extensionEvent = message
 
@@ -1813,6 +1780,7 @@ export async function startPlayWriterCDPRelayServer({
               }
             } else if (method === 'Target.detachedFromTarget') {
               const detachParams = params!
+              screencasts.delete(`${connectionId}\0${detachParams.sessionId}`)
               store.setState((s) =>
                 relayState.removeTarget(s, { extensionId: connectionId, sessionId: detachParams.sessionId }),
               )
@@ -1978,16 +1946,14 @@ export async function startPlayWriterCDPRelayServer({
             ? successorCandidates[0]
             : undefined
 
-          const recordingRelay = recordingRelays.get(connectionId)
-          if (recordingRelay) {
-            recordingRelay.destroyAll('Extension disconnected')
-          }
-          recordingRelays.delete(connectionId)
-          const streamRelay = streamRelays.get(connectionId)
-          if (streamRelay) {
-            streamRelay.destroyAll('Extension disconnected')
-          }
-          streamRelays.delete(connectionId)
+          // Chrome-side screencasts end with this connection's debugger sessions
+          Array.from(screencasts.entries())
+            .filter(([, entry]) => {
+              return entry.extensionId === connectionId
+            })
+            .forEach(([key]) => {
+              screencasts.delete(key)
+            })
 
           if (successorExtension) {
             logger?.log(
@@ -2187,7 +2153,7 @@ export async function startPlayWriterCDPRelayServer({
   }
 
   // ============================================================================
-  // Security middleware for privileged HTTP routes (/cli/*, /recording/*, /mcp-log)
+  // Security middleware for privileged HTTP routes (/cli/*, /recorder/*, /mcp-log)
   //
   // CORS alone does NOT prevent cross-origin POST attacks. Browsers skip the
   // preflight for "simple" requests (POST + Content-Type: text/plain), so a
@@ -2251,9 +2217,7 @@ export async function startPlayWriterCDPRelayServer({
   }
 
   app.use('/cli/*', privilegedRouteMiddleware)
-  app.use('/recording/*', privilegedRouteMiddleware)
   app.use('/recorder/*', privilegedRouteMiddleware)
-  app.use('/stream/*', privilegedRouteMiddleware)
   app.use('/mcp-log', privilegedRouteMiddleware)
 
   // Track only sessions that were actually created. Hono caches the parsed
@@ -2787,66 +2751,6 @@ export async function startPlayWriterCDPRelayServer({
     }
   })
 
-  // ============================================================================
-  // Recording Endpoints - For screen recording via chrome.tabCapture
-  // ============================================================================
-
-  app.post('/recording/start', async (c) => {
-    const body: StartRecordingBody & { sessionId?: string | number } = await c.req.json()
-    const sessionId = normalizeSessionId(body.sessionId)
-    const { sessionId: _sessionId, ...recordingOptions } = body
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getRecordingRelay(extensionId)
-    if (!relay) {
-      return c.json({ success: false, error: 'Extension not connected' }, 500)
-    }
-    const recordingParams = (resolvedSessionId
-      ? { ...recordingOptions, sessionId: resolvedSessionId }
-      : recordingOptions) as StartRecordingBody
-    const result = await relay.startRecording(recordingParams)
-    const status = result.success ? 200 : result.error?.includes('required') ? 400 : 500
-    return c.json(result, status)
-  })
-
-  app.post('/recording/stop', async (c) => {
-    const body: { sessionId?: string | number } = await c.req.json()
-    const sessionId = normalizeSessionId(body.sessionId)
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getRecordingRelay(extensionId)
-    if (!relay) {
-      return c.json({ success: false, error: 'Extension not connected' }, 500)
-    }
-    const stopParams: StopRecordingParams = resolvedSessionId ? { sessionId: resolvedSessionId } : {}
-    const result = await relay.stopRecording(stopParams)
-    const status = result.success ? 200 : result.error?.includes('not found') ? 404 : 500
-    return c.json(result, status)
-  })
-
-  app.get('/recording/status', async (c) => {
-    const sessionId = normalizeSessionId(c.req.query('sessionId'))
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getRecordingRelay(extensionId)
-    if (!relay) {
-      return c.json({ isRecording: false })
-    }
-    const isRecordingParams: IsRecordingParams = resolvedSessionId ? { sessionId: resolvedSessionId } : {}
-    const result = await relay.isRecording(isRecordingParams)
-    return c.json(result)
-  })
-
-  app.post('/recording/cancel', async (c) => {
-    const body: { sessionId?: string | number } = await c.req.json()
-    const sessionId = normalizeSessionId(body.sessionId)
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getRecordingRelay(extensionId)
-    if (!relay) {
-      return c.json({ success: false, error: 'Extension not connected' }, 500)
-    }
-    const cancelParams: CancelRecordingParams = resolvedSessionId ? { sessionId: resolvedSessionId } : {}
-    const result = await relay.cancelRecording(cancelParams)
-    return c.json(result)
-  })
-
   // Push a fire-and-forget notification to all connected extensions.
   // No `id` field = no response expected; the extension handles it as a one-way event.
   function notifyExtensionRecorderState(recording: boolean): void {
@@ -2990,52 +2894,6 @@ export async function startPlayWriterCDPRelayServer({
     } catch {
       return c.json({ error: `Recording ${recordingId} not found` }, 404)
     }
-  })
-
-  // ============================================================================
-  // Streaming Endpoints - Live RTMP streaming of a tab via ffmpeg
-  // ============================================================================
-
-  app.post('/stream/start', async (c) => {
-    const body: StartStreamParams & { sessionId?: string | number } = await c.req.json()
-    const sessionId = normalizeSessionId(body.sessionId)
-    const { sessionId: _sessionId, ...streamOptions } = body
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getStreamRelay(extensionId)
-    if (!relay) {
-      return c.json({ success: false, error: 'Extension not connected' }, 500)
-    }
-    const streamParams: StartStreamParams = resolvedSessionId
-      ? { ...streamOptions, sessionId: resolvedSessionId }
-      : streamOptions
-    const result = await relay.startStream(streamParams)
-    const status = result.success ? 200 : result.error?.includes('required') ? 400 : 500
-    return c.json(result, status)
-  })
-
-  app.post('/stream/stop', async (c) => {
-    const body: { sessionId?: string | number } = await c.req.json()
-    const sessionId = normalizeSessionId(body.sessionId)
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getStreamRelay(extensionId)
-    if (!relay) {
-      return c.json({ success: false, error: 'Extension not connected' }, 500)
-    }
-    const stopParams: StopStreamParams = resolvedSessionId ? { sessionId: resolvedSessionId } : {}
-    const result = await relay.stopStream(stopParams)
-    const status = result.success ? 200 : result.error?.includes('No active stream') ? 404 : 500
-    return c.json(result, status)
-  })
-
-  app.get('/stream/status', async (c) => {
-    const sessionId = normalizeSessionId(c.req.query('sessionId'))
-    const { extensionId, sessionId: resolvedSessionId } = await resolveRecordingRoute({ sessionId })
-    const relay = getStreamRelay(extensionId)
-    if (!relay) {
-      return c.json({ streaming: false })
-    }
-    const result = relay.streamStatus(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
-    return c.json(result)
   })
 
   // ============================================================================
@@ -3261,15 +3119,6 @@ export async function startPlayWriterCDPRelayServer({
       const { extensions, playwrightClients } = store.getState()
 
       closeAllRemoteDials()
-      for (const recordingRelay of recordingRelays.values()) {
-        recordingRelay.destroyAll('Relay stopped')
-      }
-      recordingRelays.clear()
-      for (const streamRelay of streamRelays.values()) {
-        streamRelay.destroyAll('Relay stopped')
-      }
-      streamRelays.clear()
-
       for (const client of playwrightClients.values()) {
         client.ws.close(1000, 'Server stopped')
       }

@@ -158,7 +158,6 @@ describe('remote-control', () => {
     expect(getRemoteExtensionMethodRejection('forwardCDPCommand')).toBeNull()
     expect(getRemoteExtensionMethodRejection('updateTabGroup')).toBeNull()
     expect(getRemoteExtensionMethodRejection('createInitialTab')).toBeNull()
-    expect(getRemoteExtensionMethodRejection('startRecording')).toMatchInlineSnapshot(`"Screen recording is not supported over Remote control yet."`)
     expect(getRemoteExtensionMethodRejection('ghost-browser')).toMatchInlineSnapshot(`"Ghost Browser APIs are not available over Remote control."`)
   })
 

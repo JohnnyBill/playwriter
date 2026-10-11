@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { chromium, type Page } from '@xmorse/playwright-core'
 import WebSocket from 'ws'
 import path from 'node:path'
+import fs from 'node:fs'
 import { getCdpUrl } from './utils.js'
 import {
   setupTestContext,
@@ -509,78 +510,86 @@ describe('Relay Navigation Tests', () => {
     await page.close()
   }, 60000)
 
-  // Skip: chrome.tabCapture.getMediaStreamId() requires activeTab permission
-  it.skip('should record screen with navigation using chrome.tabCapture', async () => {
+  // Recording uses CDP screencast: no extension click, survives a cross-site
+  // navigation (new renderer process), and taps page audio.
+  it('records video and page audio across a cross-site navigation', async () => {
     const browserContext = getBrowserContext()
     const serviceWorker = await getExtensionServiceWorker(browserContext)
-    const path = await import('node:path')
-    const fs = await import('node:fs')
+    const server = await createSimpleServer({
+      routes: {
+        '/a': `<!doctype html><html><body style="background:#123">
+          <button id="play" style="font-size:40px">play</button>
+          <script>
+            document.getElementById('play').onclick = () => {
+              const ctx = new AudioContext()
+              const osc = ctx.createOscillator()
+              osc.frequency.value = 440
+              osc.connect(ctx.destination)
+              osc.start()
+            }
+          </script></body></html>`,
+        '/b': `<!doctype html><html><body style="background:#fff">
+          <style>@keyframes s{to{transform:rotate(360deg)}}.b{width:200px;height:200px;background:red;animation:s 1s linear infinite}</style>
+          <div class="b"></div></body></html>`,
+      },
+    })
+    const port = new URL(server.baseUrl).port
+    const outputPath = path.join(process.cwd(), 'tmp', 'relay-navigation-recording.mp4')
 
-    const recordingPage = await browserContext.newPage()
-    await recordingPage.goto('https://news.ycombinator.com/', { waitUntil: 'domcontentloaded' })
-    await recordingPage.bringToFront()
-
+    const page = await browserContext.newPage()
+    await page.goto(`http://localhost:${port}/a`)
+    await page.bringToFront()
     await serviceWorker.evaluate(async () => {
       await globalThis.toggleExtensionForActiveTab()
     })
-    await new Promise((r) => setTimeout(r, 200))
 
-    const outputPath = path.join(process.cwd(), 'tmp', 'test-recording.mp4')
-    if (!fs.existsSync(path.dirname(outputPath))) {
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+    const browser = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+    try {
+      const cdpPage = browser
+        .contexts()[0]
+        .pages()
+        .find((p) => p.url().endsWith('/a'))!
+      expect(cdpPage).toBeDefined()
+
+      const { ScreenRecording } = await import('./screen-recording.js')
+      const recording = await ScreenRecording.start({ page: cdpPage, outputPath, audio: true, frameRate: 30 })
+      await cdpPage.click('#play')
+      await new Promise((r) => setTimeout(r, 1500))
+      const framesBeforeNavigation = recording.capture.stats.capturedFrames
+
+      await cdpPage.goto(`http://127.0.0.1:${port}/b`)
+      await new Promise((r) => setTimeout(r, 1500))
+      const framesAfterNavigation = recording.capture.stats.capturedFrames - framesBeforeNavigation
+
+      const result = await recording.stop()
+      expect(framesAfterNavigation).toBeGreaterThan(10)
+      expect(recording.capture.stats.audioChunks).toBeGreaterThan(5)
+
+      const { spawnSync } = await import('node:child_process')
+      const probe = JSON.parse(
+        spawnSync('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', result.path]).stdout.toString(),
+      ) as { streams: Array<{ codec_type: string; codec_name: string }>; format: { duration: string } }
+      expect(probe.streams.map((s) => `${s.codec_type}:${s.codec_name}`).sort()).toMatchInlineSnapshot(`
+        [
+          "audio:aac",
+          "video:h264",
+        ]
+      `)
+      expect(Math.abs(Number(probe.format.duration) * 1000 - result.duration)).toBeLessThan(100)
+
+      // The tone plays during the first part and stops at the navigation
+      const maxVolume = (from: number, to: number) => {
+        const stderr = spawnSync('ffmpeg', ['-hide_banner', '-ss', String(from), '-to', String(to), '-i', result.path, '-af', 'volumedetect', '-vn', '-f', 'null', '-']).stderr.toString()
+        return Number(stderr.match(/max_volume: (-?[\d.]+) dB/)?.[1] ?? -91)
+      }
+      expect(maxVolume(0.5, 1.4)).toBeGreaterThan(-20)
+      expect(maxVolume(result.duration / 1000 - 0.8, result.duration / 1000)).toBeLessThan(-60)
+    } finally {
+      await browser.close()
+      await page.close()
+      await server.close()
+      fs.rmSync(outputPath, { force: true })
     }
-
-    const { startRecording, stopRecording, isRecording } = await import('./screen-recording.js')
-
-    const startResult = await startRecording({
-      outputPath,
-      frameRate: 30,
-      audio: false,
-      videoBitsPerSecond: 1500000,
-      relayPort: TEST_PORT,
-    })
-    expect(startResult.isRecording).toBe(true)
-
-    await recordingPage.locator('.titleline a').first().click()
-    await recordingPage.waitForLoadState('domcontentloaded')
-    await new Promise((r) => setTimeout(r, 500))
-
-    await recordingPage.goBack()
-    await recordingPage.waitForLoadState('domcontentloaded')
-
-    const status = await isRecording({ relayPort: TEST_PORT })
-    expect(status.isRecording).toBe(true)
-
-    const stopResult = await stopRecording({ relayPort: TEST_PORT })
-    expect(stopResult.path).toBe(outputPath)
-    expect(stopResult.size).toBeGreaterThan(10000)
-    expect(fs.existsSync(outputPath)).toBe(true)
-
-    // Create a sped-up demo video from the recording.
-    // We fake executionTimestamps since this test calls screen-recording
-    // directly (not via executor sandbox which tracks them automatically).
-    const { createDemoVideo } = await import('./ffmpeg.js')
-    const demoPath = await createDemoVideo({
-      recordingPath: outputPath,
-      durationMs: stopResult.duration,
-      executionTimestamps: [
-        // Simulate two interactions with an idle gap between them
-        { start: 0.5, end: 1.5 },
-        { start: 3, end: 4 },
-      ],
-      speed: 4,
-    })
-    expect(fs.existsSync(demoPath)).toBe(true)
-    expect(demoPath).toContain('-demo')
-
-    // Verify the demo video is smaller (idle sections were sped up)
-    const demoSize = fs.statSync(demoPath).size
-    expect(demoSize).toBeGreaterThan(0)
-    console.log(`Recording: ${stopResult.size} bytes, Demo: ${demoSize} bytes`)
-
-    await recordingPage.close()
-    fs.unlinkSync(outputPath)
-    fs.unlinkSync(demoPath)
   }, 60000)
 
   // Regression test for https://github.com/remorses/playwriter/issues/40

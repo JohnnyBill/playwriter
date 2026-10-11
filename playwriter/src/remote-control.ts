@@ -352,9 +352,6 @@ export function getRemoteCdpCommandRejection(method: string): string | null {
  * must be rejected on a remote control connection, or null when allowed.
  */
 export function getRemoteExtensionMethodRejection(method: string): string | null {
-  if (method === 'startRecording' || method === 'stopRecording' || method === 'cancelRecording') {
-    return 'Screen recording is not supported over Remote control yet.'
-  }
   // Remote peers must never close tabs by ownership key: the handler scans every local tab
   if (method === 'closeTabsForKey') {
     return 'Closing session tabs is not available over Remote control.'

@@ -7,7 +7,6 @@ export interface TabInfo {
   state: TabState
   errorText?: string
   attachOrder?: number
-  isRecording?: boolean
   /** Tab group title this tab belongs to. Undefined = default 'playwriter' group.
    *  Source of truth for grouping — Chrome group membership is derived from it. */
   groupTitle?: string
@@ -26,13 +25,4 @@ export interface ExtensionState {
   currentTabId: number | undefined
   preferredWindowId: number | undefined
   errorText: string | undefined
-}
-
-/**
- * Recording state - stored in service worker to track active recordings.
- * The actual MediaRecorder/MediaStream live in the offscreen document.
- */
-export interface RecordingInfo {
-  tabId: number
-  startedAt: number
 }

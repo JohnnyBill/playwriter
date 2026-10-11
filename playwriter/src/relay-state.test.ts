@@ -638,22 +638,33 @@ describe('getLocalExtensions', () => {
   })
 })
 
-describe('findExtensionIdByCdpSession', () => {
-  test('finds extension owning a CDP sessionId', () => {
-    let state = stateWithExtension('ext-1')
-    state = relayState.addTarget(state, {
-      extensionId: 'ext-1',
-      sessionId: 'pw-tab-1',
-      targetId: 'target-1',
-      targetInfo: makeTargetInfo(),
-    })
-
-    expect(relayState.findExtensionIdByCdpSession(state, 'pw-tab-1')).toBe('ext-1')
-  })
-
-  test('returns null if session not found', () => {
-    const state = stateWithExtension('ext-1')
-    expect(relayState.findExtensionIdByCdpSession(state, 'pw-tab-nope')).toBeNull()
+describe('mergeScreencastParams', () => {
+  test('merges recorder, skill recorder and viewer params', () => {
+    const recorder = { format: 'jpeg' as const, quality: 90, maxWidth: 1920, maxHeight: 1080, everyNthFrame: 1 }
+    const skillRecorder = { format: 'jpeg' as const, quality: 50, maxWidth: 1280, maxHeight: 720 }
+    const unlimitedPng = { everyNthFrame: 2 }
+    expect(relayState.mergeScreencastParams([recorder, skillRecorder])).toMatchInlineSnapshot(`
+      {
+        "everyNthFrame": 1,
+        "format": "jpeg",
+        "maxHeight": 1080,
+        "maxWidth": 1920,
+        "quality": 90,
+      }
+    `)
+    expect(relayState.mergeScreencastParams([skillRecorder, unlimitedPng])).toMatchInlineSnapshot(`
+      {
+        "everyNthFrame": 1,
+        "format": "jpeg",
+        "quality": 50,
+      }
+    `)
+    expect(relayState.mergeScreencastParams([unlimitedPng])).toMatchInlineSnapshot(`
+      {
+        "everyNthFrame": 2,
+        "format": "png",
+      }
+    `)
   })
 })
 

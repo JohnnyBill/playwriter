@@ -123,7 +123,7 @@ describe('Security Tests', () => {
   })
 
   // =========================================================================
-  // Privileged HTTP route hardening (/cli/*, /recording/*)
+  // Privileged HTTP route hardening (/cli/*, /recorder/*)
   //
   // These tests verify that cross-origin browser requests are blocked even
   // without CORS preflight (the "simple request" attack vector where POST +
@@ -165,12 +165,12 @@ describe('Security Tests', () => {
     expect(sameSite.status).toBe(403)
   })
 
-  it('should block cross-origin browser requests to /recording/* via Sec-Fetch-Site', async () => {
+  it('should block cross-origin browser requests to /recorder/* via Sec-Fetch-Site', async () => {
     const logger = createFileLogger()
     server = await startPlayWriterCDPRelayServer({ port: TEST_PORT, logger })
 
     const res = await httpRequest({
-      path: '/recording/status',
+      path: '/recorder/status',
       method: 'GET',
       headers: { 'Sec-Fetch-Site': 'cross-site' },
     })
@@ -229,7 +229,7 @@ describe('Security Tests', () => {
     expect(res.status).toBe(404)
   })
 
-  it('should enforce token on /cli/* and /recording/* when token mode is enabled', async () => {
+  it('should enforce token on /cli/* and /recorder/* when token mode is enabled', async () => {
     const secretToken = 'test-secret-token'
     const logger = createFileLogger()
     server = await startPlayWriterCDPRelayServer({ port: TEST_PORT, token: secretToken, logger })
@@ -262,16 +262,16 @@ describe('Security Tests', () => {
     const queryOk = await fetch(`http://127.0.0.1:${TEST_PORT}/cli/sessions?token=${secretToken}`)
     expect(queryOk.status).toBe(200)
 
-    // Token also enforced on /recording/*
+    // Token also enforced on /recorder/*
     const recordingNoToken = await httpRequest({
-      path: '/recording/status',
+      path: '/recorder/status',
       method: 'GET',
       headers: {},
     })
     expect(recordingNoToken.status).toBe(401)
 
     const recordingWithToken = await httpRequest({
-      path: '/recording/status',
+      path: '/recorder/status',
       method: 'GET',
       headers: { Authorization: `Bearer ${secretToken}` },
     })
