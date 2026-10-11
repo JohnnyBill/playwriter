@@ -351,6 +351,64 @@ describe('Session tab groups', () => {
     })
   }, 60000)
 
+  it('a session without --tab-group uses the default group, not an existing custom one', async () => {
+    const newSession = async (body: { tabGroup?: string }) => {
+      const response = await fetch(`${SERVER_URL}/cli/session/new`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      })
+      return ((await response.json()) as { id: string }).id
+    }
+    const custom = await newSession({ tabGroup: 'agent-iso' })
+    const plain = await newSession({})
+
+    const created = await executeCli({
+      sessionId: custom,
+      code: js`
+        state.isoA = await context.newPage();
+        state.isoB = await context.newPage();
+      `,
+    })
+    expect(created.isError).toBeFalsy()
+    await waitForGroups((g) => g.some((group) => group.title === 'agent-iso' && group.tabCount === 2))
+
+    const plainResult = await executeCli({
+      sessionId: plain,
+      code: js`
+        state.plainPage = await context.newPage();
+        await state.plainPage.goto('about:blank');
+      `,
+    })
+    expect(plainResult.isError).toBeFalsy()
+
+    const groups = await waitForGroups((g) => g.some((group) => group.title === 'playwriter' && group.tabCount === 2))
+    expect(groups.find((g) => g.title === 'agent-iso')?.tabCount).toBe(2)
+    expect(groups.find((g) => g.title === 'playwriter')?.tabCount).toBe(2)
+    const serviceWorker = await getExtensionServiceWorker(testCtx!.browserContext)
+    const titles = await serviceWorker.evaluate(() => {
+      return Array.from(globalThis.getExtensionState().tabs.values())
+        .map((tab) => tab.groupTitle || 'playwriter')
+        .sort()
+    })
+    expect(titles).toMatchInlineSnapshot(`
+      [
+        "agent-iso",
+        "agent-iso",
+        "playwriter",
+        "playwriter",
+      ]
+    `)
+
+    for (const sessionId of [custom, plain]) {
+      await fetch(`${SERVER_URL}/cli/session/delete`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ sessionId, closeCreatedTabs: true }),
+      })
+    }
+  }, 60000)
+
   it('deleting a session with closeCreatedTabs closes only its own tabs, not same-group tabs of other sessions', async () => {
     const newSession = async () => {
       const response = await fetch(`${SERVER_URL}/cli/session/new`, {
