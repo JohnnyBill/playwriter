@@ -5,8 +5,8 @@ If `playwriter` command is not found, install globally or use npx/bunx:
 ```bash
 npm install -g playwriter@latest
 # or use without installing:
-npx playwriter@latest session new
-bunx playwriter@latest session new
+npx playwriter@latest session new --tab-group docs
+bunx playwriter@latest session new --tab-group docs
 ```
 
 If using npx or bunx always use @latest for the first session command. so we are sure of using the latest version of the package
@@ -19,10 +19,10 @@ Each session runs in an **isolated sandbox** with its own `state` object. Use se
 - Persist data (pages, variables) across multiple execute calls
 - Avoid interference when multiple agents use playwriter simultaneously
 
-Get a new session ID to use in commands:
+Get a new session ID to use in commands. Always pass a short task-specific `--tab-group` name (see Tab groups):
 
 ```bash
-playwriter session new
+playwriter session new --tab-group docs
 # outputs: 1
 ```
 
@@ -46,9 +46,7 @@ playwriter session reset <sessionId>
 
 ### Tab groups
 
-Use the shortest clear **single-word** group name with no spaces, such as `docs`, `shop`, `test`, or `scrape`. Local sessions default to `playwriter`; remote-control sessions default to `remote`.
-
-If you use playwriter on your own initiative (the user did not ask for browser work), for example to verify a local dev server, set a task-specific group: the short project name, like `--tab-group kimaki`.
+**Always** set a custom group name for every session instead of the defaults (`playwriter` locally, `remote` for remote control). Use the shortest clear **single-word** name with no spaces, describing the task or site: `docs`, `shop`, `test`, `scrape`, `github`. When verifying a local dev server, use the short project name, like `--tab-group kimaki`.
 
 ```bash
 playwriter session new --tab-group docs
@@ -83,7 +81,7 @@ npx -y traforo -p 19988 -- npx -y playwriter serve --token MY_SECRET_TOKEN
 # Remote machine
 export PLAYWRITER_HOST=https://<tunnel-id>-tunnel.traforo.dev
 export PLAYWRITER_TOKEN=MY_SECRET_TOKEN
-playwriter session new
+playwriter session new --tab-group docs
 playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto('https://example.com')"
 ```
 
@@ -239,7 +237,7 @@ Cloud sessions auto-stop after 10 minutes of inactivity. When proxy is enabled, 
 playwriter -s <sessionId> -e "<code>"
 ```
 
-The `-s` flag specifies a session ID (required). Get one with `playwriter session new`. Use the same session to persist state across commands.
+The `-s` flag specifies a session ID (required). Get one with `playwriter session new --tab-group <name>`. Use the same session to persist state across commands.
 
 **Execution timeout:** default is 10000ms. Override per call with `--timeout <ms>`, or set a new default via env:
 
