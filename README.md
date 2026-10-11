@@ -123,10 +123,12 @@ await (await a.browser.contexts()[0].newPage()).goto('https://example.com')
 
 // process B, later
 await using b = await connectViaExtension({ tabGroup: 'job' })
-const page = b.browser.contexts()[0].pages().findLast((p) => p.url().includes('example.com'))
+const page = b.browser.contexts()[0].pages().findLast((p) => p.url() === 'https://example.com/')
 ```
 
-Tabs that `b` did not open are never closed by `b.close()`.
+Tabs that `b` did not open are never closed by `b.close()`. Match tabs by their exact url: `context.pages()` also lists tabs other sessions opened.
+
+Several processes can share one tab for `fetch` calls inside a signed-in site, and the last one closes it. See [Sharing one tab between processes](https://playwriter.dev/docs/sessions#sharing-one-tab-between-processes).
 
 If the extension runs in more than one browser or profile, pass `selectBrowser`. It gets every connected browser and returns the one to use:
 
