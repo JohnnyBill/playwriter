@@ -273,24 +273,24 @@ client-side rendering.
 ## Screen recording
 
 Have the agent **record what it's doing** as MP4 video. The recording uses
-`chrome.tabCapture` and runs in the extension context, so it
+CDP screencast piped to `ffmpeg`, so it needs no permission click and
 **survives page navigation**.
 
 ```bash
 # Start recording
-playwriter -e "startRecording({ page: state.page, outputPath: './recording.mp4', frameRate: 30 })"
+playwriter -e "await recording.start({ page: state.page, outputPath: './recording.mp4', frameRate: 30 })"
 
 # Navigate, interact — recording continues
-playwriter -e "state.page.click('a'); state.page.waitForLoadState('domcontentloaded')"
-playwriter -e "state.page.goBack()"
+playwriter -e "await state.page.click('a'); await state.page.waitForLoadState('domcontentloaded')"
+playwriter -e "await state.page.goBack()"
 
 # Stop and save
-playwriter -e "stopRecording({ page: state.page })"
+playwriter -e "await recording.stop({ page: state.page })"
 ```
 
-Unlike `getDisplayMedia`, this approach **persists across navigations** because the extension holds
-the `MediaRecorder`, not the page. You can also check recording status with `isRecording` or cancel
-without saving with `cancelRecording`.
+It works in extension, direct CDP and headless mode, and can record **page audio** with
+`audio: true`. You can also check recording status with `recording.isRecording` or cancel
+without saving with `recording.cancel`. Requires `ffmpeg` on `PATH`.
 
 ## Comparison
 

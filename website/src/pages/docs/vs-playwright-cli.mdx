@@ -23,7 +23,7 @@ Playwriter gives you the **full Playwright API** and, by design, runs it against
 | Collaboration | **Same tab as user** | Separate window |
 | Programmable JS | **`execute` with persistent `state`** | `run-code` (no cross-call state) |
 | Raw CDP access | **First-class** | Not exposed |
-| Native video | **`chrome.tabCapture` (30-60fps)** | Trace / screencast based |
+| Video recording | **CDP screencast + ffmpeg (up to 60fps), page audio** | Trace / screencast based |
 | Cloud + remote tab share | **Built-in** | No |
 
 ## Same API, different browser
@@ -52,8 +52,9 @@ playwriter -s 1 -e "state.cdp.send('Performance.getMetrics').then(console.log)"
 
 ## Video recording
 
-Playwright CLI records via tracing (file-based, low FPS). Playwriter uses
-`chrome.tabCapture` for native 30-60fps recording that survives page navigation.
+Playwright CLI records via tracing (file-based, low FPS). Playwriter pipes CDP screencast frames
+to `ffmpeg` for up to 60fps recording with optional page audio. No permission click, and it
+survives page navigation.
 
 ```bash
 playwriter -s 1 -e "recording.start({ page: state.page, outputPath: './demo.mp4' })"

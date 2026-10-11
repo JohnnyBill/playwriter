@@ -25,7 +25,7 @@ and variables. It already knows Playwright, so there is nothing new to learn.
 | Reusable logic | **Import a `.js` module with the live `page`** | Shell scripts or `batch` command lists |
 | LLM knowledge | **Already knows Playwright** | Must learn 50+ custom commands |
 | Bot handling | **Real Chrome; disconnect for manual challenges** | Automated browser by default; stealth via plugin |
-| Video recording | **Native tab capture, no base64** | CDP screencast piped to ffmpeg |
+| Video recording | **CDP screencast + ffmpeg, page audio, hardware encoder** | CDP screencast piped to ffmpeg, no audio |
 | Skill recorder | **Record your workflow → reusable skill** | Bundled reference skills only |
 | Cloud browsers | **Built-in stealth + proxy + CAPTCHA** | Provider plugin |
 | Remote tab sharing | **Built-in one-click secret tunnel** | No built-in tab-sharing tunnel |
@@ -120,15 +120,16 @@ Playwriter connects to the Chrome you are **already using**, through an extensio
 logins, and extensions are all there with zero setup. The site sees a real user browser because it
 **is** one. No dialog, no flags, no relaunch. See [vs Chrome Direct CDP](/docs/vs-chrome-cdp).
 
-## Video recording without base64 waste
+## Video recording with page audio
 
-agent-browser records video by driving CDP screencast frames into ffmpeg. That is the same
-per-frame base64 pipeline Playwright uses: frames are encoded to base64, shipped over CDP, then
-decoded before ffmpeg muxes them.
+Both tools record the same way: CDP `Page.startScreencast` frames piped into ffmpeg. Neither needs a
+permission click, and both keep recording across page navigations.
 
-Playwriter records with `chrome.tabCapture` inside the extension. The `MediaRecorder` lives in the
-browser, so recording is native 30-60fps, **survives page navigation**, and never ships base64
-frames over the wire.
+The differences are in the details. Playwriter asks Chrome for **JPEG** frames instead of PNG, so
+each frame is cheaper to encode and ship. It encodes H.264 with a **hardware encoder** when ffmpeg
+has one (VideoToolbox, NVENC, QSV, AMF). On 120 Hz and 144 Hz displays it asks for every Nth frame
+to save CPU. With `audio: true` it also records **page audio** through a Web Audio tap;
+agent-browser recordings have no audio.
 
 ```bash
 playwriter -s 1 -e "await recording.start({ page: state.page, outputPath: './demo.mp4', frameRate: 60 })"

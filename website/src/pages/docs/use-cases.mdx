@@ -124,7 +124,7 @@ The user sees Chrome's automation banner so they always know when their browser 
 
 ## Screen recording
 
-Have the agent **record what it's doing** as an MP4 video. The recording uses `chrome.tabCapture` and survives page navigation.
+Have the agent **record what it's doing** as an MP4 video. The recording pipes CDP screencast frames to `ffmpeg`, needs no permission click, and survives page navigation.
 
 ```bash
 # Open a tab and start recording

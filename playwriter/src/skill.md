@@ -144,8 +144,6 @@ playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto(
 - `ws://` or `wss://` URL — explicit WebSocket endpoint (local or cloud browser provider)
 - `host:port` — resolves via HTTP probe to a ws:// URL
 
-**Limitations:** screen recording (`recording.start`/`recording.stop`) is not available in direct CDP mode since it relies on the extension's `chrome.tabCapture` API.
-
 ### Remote control (drive another user's browser)
 
 When a user shares their browser with you, they send a secret **id** (created by right-clicking the Playwriter icon, then **Share browser…**). The user needs no playwriter install, only the extension.
@@ -167,7 +165,6 @@ Rules for remote-control sessions:
 - Other tabs may belong to the user or their local agents. Prefer your own pages: `state.page = context.pages()[0]` for the shared tab, or `await context.newPage()` for new work.
 - The user revokes access anytime with **Stop sharing**, or by closing the tab where sharing started; the id then stops working permanently. If the connection dies, ask the user for a fresh id.
 - Never print, log, or share the id: whoever has it can control the user's browser as them.
-- Screen recording is not available on remote-control sessions.
 
 **Use cases:** the user is logged into a website and wants you (a remote agent like Devin, a cloud bot, or a CLI agent on another machine) to act in their authenticated session without sharing passwords.
 
@@ -187,7 +184,7 @@ playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto(
 playwriter -s 1 -e "console.log(await snapshot({ page: state.page }))"
 ```
 
-Multiple sessions reuse the same headless Chrome process. Recording is not available in headless mode.
+Multiple sessions reuse the same headless Chrome process.
 
 If no Chrome binary is found, `playwriter session new --browser headless` will tell you to run `playwriter browser install` first to download Chrome for Testing.
 
@@ -351,7 +348,7 @@ If the user started from the icon menu and then says "done", still run `playwrit
 
 ### Live streaming to RTMP (X Live, Twitch, YouTube)
 
-Niche use case: `playwriter stream start|stop|status` streams a tab live to RTMP endpoints via ffmpeg, surviving navigation and running 24/7 after the CLI exits. Docs: https://playwriter.dev/docs/streaming
+Niche use case: `playwriter stream start|stop|status` streams `state.page` live to RTMP endpoints via CDP screencast and ffmpeg (must be on PATH). It survives navigation and CLI exit, and ends when the page closes or the session is reset. Docs: https://playwriter.dev/docs/streaming
 
 ### Debugging playwriter issues
 
@@ -396,19 +393,6 @@ start chrome.exe --profile-directory=Default
 Start-Process chrome.exe -ArgumentList '--profile-directory=Default'
 ```
 
-To also enable automatic tab capture for screen recording (no manual extension click needed), add the `--allowlisted-extension-id` and `--auto-accept-this-tab-capture` flags:
-
-```bash
-# macOS
-open -a "Google Chrome" --args --profile-directory=Default --allowlisted-extension-id=jfeammnjpkecdekppnclgkkffahnhfhe --auto-accept-this-tab-capture
-
-# Linux
-google-chrome --profile-directory=Default --allowlisted-extension-id=jfeammnjpkecdekppnclgkkffahnhfhe --auto-accept-this-tab-capture &
-
-# Windows
-start chrome.exe --profile-directory=Default --allowlisted-extension-id=jfeammnjpkecdekppnclgkkffahnhfhe --auto-accept-this-tab-capture
-```
-
 You can collaborate with the user - they can help with captchas, difficult elements, or reproducing bugs.
 
 **Direct CDP mode (no extension needed):** Playwriter can connect directly to Chrome's DevTools Protocol, bypassing the extension. This is useful in CI, Docker, headless environments, when Chrome has `--remote-debugging-port=9222`, or with cloud browser providers (e.g. `wss://xxx.cdp.browser-use.com`). If the user provides a CDP URL, set `PLAYWRITER_DIRECT` in the MCP client config:
@@ -427,7 +411,7 @@ You can collaborate with the user - they can help with captchas, difficult eleme
 }
 ```
 
-`PLAYWRITER_DIRECT` accepts `1` (auto-discover Chrome on port 9222), a `ws://` or `wss://` endpoint (including cloud browser providers), or `host:port`. Screen recording is not available in direct CDP mode since it relies on the extension's `chrome.tabCapture` API.
+`PLAYWRITER_DIRECT` accepts `1` (auto-discover Chrome on port 9222), a `ws://` or `wss://` endpoint (including cloud browser providers), or `host:port`.
 
 ## context variables
 
@@ -1203,7 +1187,9 @@ Labels are color-coded: yellow=links, orange=buttons, coral=inputs, pink=checkbo
 
 **resizeImageForAgent** - shrink an image so it consumes fewer tokens when read back into context. The resized image is automatically included in the response (visible to the LLM). `await resizeImageForAgent({ input: '/absolute/path/to/screenshot.png' })`. Also accepts `width`, `height`, `maxDimension`, `quality`, `format` (default: `'png'`), `output`. Alias: `resizeImage`.
 
-**recording.start / recording.stop** - record the page as a video at native FPS (30-60fps). Uses `chrome.tabCapture` so **recording survives page navigation**. Auto-overlays a ghost cursor that follows mouse actions. Requires user to have clicked the Playwriter extension icon on the tab. Auto-resizes viewport to 16:9 (override with `aspectRatio: null`). Auto-stops after 15 min (override with `maxDurationMs`).
+**recording.start / recording.stop** - record the page as a video. Uses CDP screencast piped to `ffmpeg` (**must be on PATH**). No user click needed; works in every mode (extension, direct CDP, headless, cloud, remote). **Recording survives page navigation**. Auto-overlays a ghost cursor that follows mouse actions. Auto-resizes viewport to 16:9 (only shrinks, override with `aspectRatio: null`). Auto-stops after 15 min (override with `maxDurationMs`). Output is `.mp4`/`.mov`/`.mkv` (H.264) or `.webm` (VP8). Several pages can record at once. Recording ends when the page closes or the session is reset.
+
+`audio: true` taps page `<audio>`/`<video>` and AudioContexts. It misses cross-origin iframe audio and AudioContext graphs wired before start, and the page can detect the patched audio APIs.
 
 For demos, use interaction methods (`locator.click()`, `page.mouse.move()`) instead of `goto()` to show realistic cursor motion.
 
@@ -1211,9 +1197,10 @@ For demos, use interaction methods (`locator.click()`, `page.mouse.move()`) inst
 await recording.start({
   page: state.page,
   outputPath: '/absolute/path/to/recording.mp4',
-  frameRate: 30, // default
-  audio: false, // default (tab audio)
-  videoBitsPerSecond: 2500000,
+  frameRate: 30, // default, max 60
+  audio: false, // default
+  maxSize: 1920, // default, longest output edge in pixels
+  quality: 90, // default, JPEG frame quality 0-100
   aspectRatio: { width: 16, height: 9 }, // default, set null to skip
   maxDurationMs: 15 * 60 * 1000, // default, set 0 to disable
 })
@@ -1223,7 +1210,7 @@ await state.page.click('a')
 await state.page.waitForLoadState('domcontentloaded')
 
 // Stop — save full result including executionTimestamps for createDemoVideo
-state.recordingResult = await recording.stop({ page: state.page })
+state.recordingResult = await recording.stop({ page: state.page }) // { path, duration, size, executionTimestamps }
 
 // Other: recording.isRecording({ page: state.page }), recording.cancel({ page: state.page })
 ```

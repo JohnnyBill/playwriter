@@ -49,7 +49,7 @@ Each session has **isolated state**. Browser tabs are **shared** across sessions
 
 ```bash
 # Browser management
-playwriter browser start             # auto-finds Chrome for Testing or Chromium, with recording flags enabled
+playwriter browser start             # auto-finds Chrome for Testing or Chromium
 playwriter browser start /path/to/browser-binary
 
 # Session management
@@ -192,7 +192,7 @@ playwriter -e "await state.editor.edit({ url: 'https://example.com/app.js', oldS
 playwriter -e "await screenshotWithAccessibilityLabels({ page: state.page })"
 ```
 
-**Live stream a tab to X Live / Twitch (RTMP, runs 24/7):**
+**Live stream a tab to X Live / Twitch (RTMP, survives CLI exit):**
 
 ```bash
 playwriter -s 1 -e "state.page = await context.newPage(); await state.page.goto('https://example.com')"
@@ -240,7 +240,7 @@ Color-coded: yellow=links, orange=buttons, coral=inputs, pink=checkboxes, peach=
 | Captchas        | Disconnect extension to solve | Managed automation profile         |
 | Programmable JS | `execute` with persistent state | `run-code` (no cross-call state) |
 | Raw CDP access  | First-class                   | Not exposed                        |
-| Native video    | `chrome.tabCapture` (30–60fps) | Trace / screencast based          |
+| Video recording | CDP screencast + ffmpeg, page audio | Trace / screencast based     |
 
 ### vs BrowserMCP
 

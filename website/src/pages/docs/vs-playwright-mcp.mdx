@@ -23,7 +23,7 @@ raw CDP, native video, cloud browsers, and one-click tab sharing on top.
 | Attach to your Chrome | **Core design** | `--extension` mode |
 | Bot handling | **Real browser; disconnect to solve manually** | Managed automation profile by default |
 | Raw CDP access | **First-class (`getCDPSession`)** | Not exposed |
-| Native video | **`chrome.tabCapture`, no base64** | Trace / screencast based |
+| Video recording | **CDP screencast + ffmpeg, survives navigation, page audio** | Trace / screencast based |
 | Cloud + remote tab share | **Built-in** | No |
 
 ## The separate-browser problem
@@ -39,8 +39,8 @@ apart from your everyday browser. That means:
   collaborate in the same tab you're looking at.
 
 Its `--extension` mode narrows this gap by attaching to your Chrome, which is exactly the
-model Playwriter is built around, plus Playwriter layers on raw CDP, native `chrome.tabCapture`
-video, cloud browsers, remote tab sharing, and the Skill Recorder.
+model Playwriter is built around, plus Playwriter layers on raw CDP, video recording
+with page audio, cloud browsers, remote tab sharing, and the Skill Recorder.
 
 ## How Playwriter is different
 

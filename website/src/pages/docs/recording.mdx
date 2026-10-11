@@ -1,11 +1,25 @@
 ---
 title: Record Browser Automation as MP4 Video
 sidebarTitle: Recording
-description: Record browser sessions as MP4 video that survives page navigation, with ghost cursor overlay and automatic demo acceleration for idle sections.
+description: Record browser sessions as MP4 or WebM video with CDP screencast and ffmpeg. No permission click, survives page navigation, optional page audio, ghost cursor overlay and demo acceleration for idle sections.
 icon: lucide:video
 ---
 
-Have the agent **record what it's doing** as MP4 video. The recording uses `chrome.tabCapture` and runs in the extension context, so it **survives page navigation**. Unlike `getDisplayMedia`, the extension holds the `MediaRecorder`, not the page.
+Have the agent **record what it's doing** as video. Playwriter streams JPEG frames with CDP `Page.startScreencast` and pipes them to `ffmpeg`. No permission prompt, no extension click, and the **recording survives page navigation**, also cross-site.
+
+It works in every mode: extension, direct CDP (`PLAYWRITER_DIRECT`), [headless](/docs/headless), cloud browsers and remote control.
+
+## Requirements
+
+`ffmpeg` must be installed and on `PATH`.
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt install ffmpeg
+```
 
 ## Start recording
 
@@ -28,36 +42,75 @@ await state.page.goBack()
 // Still recording
 ```
 
+Static pages are fine too. The last frame is **repeated** at a constant frame rate, so the video duration matches real time.
+
 ## Stop and save
 
 ```js
 state.recordingResult = await recording.stop({ page: state.page })
-// => { path, duration, executionTimestamps }
+// => { path, duration, size, executionTimestamps }
 ```
 
-Save the full result to `state` because `executionTimestamps` is needed for `createDemoVideo`.
+`duration` is the media duration in ms, `size` is the file size in bytes. Save the full result to `state` because `executionTimestamps` is needed for `createDemoVideo`.
 
 ## Options
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `page` | Page | required | Page to record |
-| `outputPath` | string | required | Absolute path for the output MP4 |
-| `frameRate` | number | 30 | Frames per second |
-| `audio` | boolean | false | Record tab audio |
-| `videoBitsPerSecond` | number | 2500000 | Video bitrate |
-| `aspectRatio` | object \| null | `{ width: 16, height: 9 }` | Auto-resize viewport; `null` to skip |
+| `outputPath` | string | required | Absolute output path. `.mp4`, `.mov`, `.mkv` or `.webm` |
+| `frameRate` | number | 30 | Frames per second, max 60 |
+| `audio` | boolean | false | Record page audio (see [Audio](#audio)) |
+| `maxSize` | number | 1920 | Longest output edge in pixels |
+| `quality` | number | 90 | JPEG quality of captured frames, 0-100 |
+| `aspectRatio` | object \| null | `{ width: 16, height: 9 }` | Shrink viewport to this ratio; `null` to skip |
 | `maxDurationMs` | number | 15 min | Auto-stop safety limit; `0` to disable |
+
+## Output format
+
+The output size is the viewport in **device pixels** (viewport × `devicePixelRatio`), with the longest edge capped by `maxSize` and both dimensions rounded to even numbers.
+
+| Extension | Video | Audio |
+|---|---|---|
+| `.mp4`, `.mov`, `.mkv` | H.264 | AAC |
+| `.webm` | VP8 (realtime) | Opus |
+
+H.264 uses a **hardware encoder** when ffmpeg has one (`h264_videotoolbox` on macOS, NVENC, QSV or AMF on Windows and Linux), else `libx264`. Any other extension throws.
+
+On 120 Hz or 144 Hz displays Chrome sends more frames than needed, so the recorder asks for every Nth frame to save CPU.
+
+## Audio
+
+Pass `audio: true` to record **page audio**:
+
+```js
+await recording.start({
+  page: state.page,
+  outputPath: '/absolute/path/to/demo.mp4',
+  audio: true,
+})
+```
+
+Playwriter injects a Web Audio tap in the page. It captures `<audio>` and `<video>` elements (also DRM media) and AudioContexts that play to the speakers, then sends the PCM to ffmpeg.
+
+Limitations:
+
+- No audio from cross-origin (out-of-process) iframes
+- An AudioContext graph wired **before** `recording.start` is missed
+- The page can detect the patched audio APIs while recording
 
 ## Other recording commands
 
 ```js
 // Check if recording is active
 await recording.isRecording({ page: state.page })
+// => { isRecording, startedAt? }
 
 // Cancel recording without saving
 await recording.cancel({ page: state.page })
 ```
+
+Several pages can record **at the same time**. Pass the page you want to each call.
 
 ## Ghost cursor
 
@@ -93,25 +146,26 @@ const demoPath = await createDemoVideo({
 
 This can take **60-120+ seconds**. Always pass `--timeout 120000` or higher.
 
+## Library usage
+
+Record any Playwright page from your own Node.js code:
+
+```ts
+import { startRecording } from 'playwriter'
+
+const rec = await startRecording({
+  page,
+  outputPath: './demo.mp4',
+  audio: false,
+  frameRate: 30,
+})
+await page.goto('https://example.com')
+const { path, duration, size } = await rec.stop()
+// or: await rec.cancel()
+```
+
 ## Limitations
 
-- **Extension mode only.** Recording uses `chrome.tabCapture` which requires the extension. Not available in direct CDP mode or headless mode.
-- **User must click the extension icon** on the tab before recording starts.
+- **Ends with the page.** The recording is tied to the Playwright page and stops when the page closes or the session is reset.
 - **Auto-stops after 15 minutes** by default. Override with `maxDurationMs`.
-- **Viewport auto-resizes** to 16:9 aspect ratio. Pass `aspectRatio: null` to keep the current size.
-
-## Automatic tab capture
-
-To enable recording without requiring the user to click the extension icon, launch Chrome with these flags:
-
-```bash
-# macOS
-open -a "Google Chrome" --args \
-  --allowlisted-extension-id=jfeammnjpkecdekppnclgkkffahnhfhe \
-  --auto-accept-this-tab-capture
-
-# Linux
-google-chrome \
-  --allowlisted-extension-id=jfeammnjpkecdekppnclgkkffahnhfhe \
-  --auto-accept-this-tab-capture &
-```
+- **Viewport auto-resizes** to 16:9 (it only shrinks). Pass `aspectRatio: null` to keep the current size.

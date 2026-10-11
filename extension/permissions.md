@@ -48,18 +48,11 @@ records a reference to the element that the user right-clicked so an automation
 client can address it. The extension icon menu adds **Record skill**, **Share
 browser…**, and, while sharing, **Stop sharing**.
 
-### tabCapture
-
-Captures the selected tab only after the user starts screen recording from a
-Playwriter action. The resulting media stream is handled by the extension's
-offscreen document and sent to the local relay for recording.
-
 ### offscreen
 
-Creates a hidden extension document for `MediaRecorder`, user-requested
-clipboard writes, and short confirmation sounds after menu actions. Service
-workers cannot own media streams or use the document clipboard or Web Audio
-APIs directly.
+Creates a hidden extension document to copy prompts to the clipboard and play
+short menu sounds after user actions. Service workers cannot use the document
+clipboard or Web Audio APIs directly.
 
 ### clipboardWrite
 
@@ -212,8 +205,8 @@ Add this feature description:
 > Playwriter routes tunnel payloads in memory and does not store them. Anyone with
 > the link has access until you click Stop sharing in the extension icon menu.
 
-Replace the current **Permissions** list. It incorrectly names `activeTab` and
-`tabs`, which are not production manifest permissions. Use this shorter public
+Replace the current **Permissions** list. It incorrectly names `activeTab`,
+`tabs`, and `tabCapture`, which are not production manifest permissions. Use this shorter public
 summary:
 
 > **debugger:** Control tabs selected by the user through Chrome DevTools
@@ -225,8 +218,8 @@ summary:
 > **tabGroups, contextMenus:** Organize controlled tabs and add Playwriter
 > actions to the page and extension icon menus.
 >
-> **tabCapture, offscreen, clipboardWrite:** Record a selected tab and copy
-> prompts after explicit menu actions.
+> **offscreen, clipboardWrite:** Copy prompts to the clipboard and play menu
+> sounds after explicit menu actions.
 >
 > **storage:** Keep a local installation ID and active Remote control session
 > state.

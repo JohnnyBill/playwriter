@@ -41,7 +41,7 @@ This extension uses these permissions for its browser automation purpose:
 - **debugger**: Control tabs selected by the user through Chrome DevTools Protocol
 - **scripting**: Pin the right-clicked element and show short confirmation toasts
 - **tabGroups and contextMenus**: Organize connected tabs, add **Copy Playwriter Locator** to the page menu, and add Record and Remote control items to the icon menu
-- **tabCapture, offscreen, and clipboardWrite**: Record selected tabs and copy prompts after user actions
+- **offscreen and clipboardWrite**: Copy prompts to the clipboard and play menu sounds after user actions
 - **storage**: Keep a local installation ID and active Remote control session state
 - **identity and identity.email**: Distinguish Chrome profiles connected to the same local relay; these values are not sent through Remote control
 - **webNavigation**: Track navigation and popups opened by connected tabs
