@@ -1,7 +1,8 @@
 # Recording is active — how to turn it into a skill
 
 The user is performing a workflow in their browser. Clicks, fills, keypresses,
-navigations, and mutating xhr/fetch are written to a JSON event file. CDP
+navigations, mutating xhr/fetch, same-origin GET xhr/fetch, and toast or alert
+text are written to a JSON event file. CDP
 screencast writes a jpeg into a frames folder whenever the page changes. User
 clicks flash a short ripple in those frames. Recording auto-stops after 20 minutes or
 500 MB of frames and events (`reason: "max-size"`).
@@ -48,10 +49,14 @@ this workflow (or ask the user), then `playwriter recorder stop <id>`.
 `recorder events` prints one JSON object per line (jq-friendly). `t` is seconds
 since start. Every event has a sequential `id` and `ms` (milliseconds since start).
 The default output is a **thin timeline**: stored network bodies are replaced by
-sizes. Pass event ids to get sanitized details. Credential-like URL and body
-fields are replaced with `[redacted]`. Large, encoded, unknown-size, and
+sizes, and runs of identical consecutive requests are merged into one event with
+`repeat` and `lastId`. Pass event ids to get sanitized details. Credential-like
+URL and body fields are replaced with `[redacted]`. Large, unknown-size, and
 multipart bodies can be truncated or omitted. Defaults to the latest recording;
 pass `-r <recordingId>` for an older one.
+
+`network` and `toast` events carry `afterAction`: the id of the action that
+happened up to 3s before them. Use it to map each click to its requests.
 
 ```bash
 # thin timeline
@@ -60,10 +65,16 @@ playwriter recorder events | jq -r '[.id, .t, .type, (.code // .url // .signal /
 # full details of specific events
 playwriter recorder events 4 7 12
 
+# why a step failed: status >= 400, network failures, console and page errors, toasts
+playwriter recorder events --errors
+
+# hide noisy endpoints
+playwriter recorder events --exclude 'StylesService|/track'
+
 # recorded actions only
 playwriter recorder events | jq -r 'select(.type == "action") | .code'
 
-# mutating xhr/fetch (POST/PUT/PATCH/DELETE). Thin view shows sizes.
+# xhr/fetch: mutating ones from any origin, GETs from the page origin. Thin view shows sizes.
 # WebSockets are not recorded. A submit click with no matching POST is a hint.
 playwriter recorder events | jq -r 'select(.type == "network") | [.id, .method, .status, .url, .responseBodySize] | @tsv'
 playwriter recorder events 14 15
@@ -75,10 +86,14 @@ playwriter recorder events | jq 'select(.type == "download" or .type == "console
 Event types: `recording-started`, `action` (`.code` is locator code such as
 `await page.getByRole('button', { name: 'Submit' }).click()`, where `page` is the
 tab the event came from), `signal`,
-`navigation`, `page-opened`, `page-closed`, `network` (mutating xhr/fetch only,
-with sanitized, bounded body data; **WebSockets are not captured**), `download`,
-`console`, `page-error`, `recording-stopped` (includes `framesDir` and
-`frameCount`).
+`navigation`, `page-opened`, `page-closed`, `network` (mutating xhr/fetch, plus
+GET xhr/fetch to the page origin, with sanitized, bounded body data; **WebSockets
+are not captured**), `toast` (new text in `role=alert`, `role=status` or
+`aria-live` regions: `role`, `text`), `download`, `console`, `page-error`,
+`recording-stopped` (includes `framesDir` and `frameCount`).
+
+A click with a `toast` but no request usually means the site refused the step on
+the client (limits, validation). The toast text says why.
 
 Action events also carry structured fields copied from Playwright: `text` (fill),
 `key` (press), `options` (select), `files` (setInputFiles), `button` and
@@ -99,9 +114,13 @@ They still match. Verify against a live snapshot before trusting them.
 page changes. Files are named `<ms>.jpg` where `ms` is milliseconds since start.
 Every event has the same `ms` field.
 
-To see the screen at an event, **read the jpeg whose filename is closest to that
-event's `ms`**. A pink ripple marks the click. Do not write awk/ls pipelines;
-open the image file directly.
+To see the screen at an event, print its frame path and open that image. A pink
+ripple marks the click. Do not write awk/ls pipelines.
+
+```bash
+playwriter recorder frame 42               # screen when event 42 happened
+playwriter recorder frame 42 --offset 1500 # result of the click, 1.5s later
+```
 
 ## Prototype against the live page
 
@@ -337,8 +356,8 @@ Rules:
 
 ## WebSockets are not in the recording
 
-The recorder only stores mutating xhr/fetch. It does **not** store
-`WebSocket` frames. A listen socket may already be open before `recorder
+The recorder stores xhr/fetch only. It does **not** store `WebSocket`
+frames. A listen socket may already be open before `recorder
 start` (SPA already on the page). Generate / stream work often never
 appears as a `network` event.
 

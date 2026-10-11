@@ -1,7 +1,8 @@
 // Action recording for the `playwriter recorder` CLI feature.
 //
 // Playwright's API-mode recorder is the only action source. We persist those
-// actions plus mutating xhr/fetch. CDP screencast writes a jpeg per visual
+// actions plus mutating xhr/fetch, same-origin GET xhr/fetch, and toast or
+// alert text from ARIA live regions. CDP screencast writes a jpeg per visual
 // change into a timestamped folder. A click ripple marks user clicks in those
 // frames. No post-action page work: it froze typing.
 import fs from 'node:fs'
@@ -187,6 +188,11 @@ export const MAX_ACTIVE_RECORDINGS = 10
 const MAX_RESPONSE_BODY_BYTES = 50000
 const MAX_POST_DATA_BYTES = 10000
 const MAX_CONSOLE_TEXT_CHARS = 2000
+// Network and toast events get `afterAction` when they start this soon after an action
+const AFTER_ACTION_WINDOW_MS = 3000
+const ACTION_REPORT_SLACK_MS = 300
+const TOAST_BINDING = '__playwriterRecorderToast'
+const MAX_TOAST_TEXT_CHARS = 500
 const TEXTUAL_CONTENT_TYPE = /json|text|xml|x-www-form-urlencoded|graphql/i
 const SENSITIVE_FIELD_NAMES = [
   'apikey',
@@ -396,6 +402,53 @@ export function projectThinEvent(event: RecordedEvent): RecordedEvent {
   return thin
 }
 
+/** Failed requests, console errors, page errors and toasts: why a step did not work */
+export function isProblemEvent(event: RecordedEvent): boolean {
+  if (event.type === 'network') {
+    return Boolean(event.failure) || (typeof event.status === 'number' && event.status >= 400)
+  }
+  return event.type === 'console' || event.type === 'page-error' || event.type === 'toast'
+}
+
+/**
+ * Merges runs of consecutive network events with the same method, url and status
+ * (polling, bursts of identical calls) into the first one, with `repeat` and `lastId`.
+ */
+export function collapseRepeatedNetwork(events: RecordedEvent[]): RecordedEvent[] {
+  const out: RecordedEvent[] = []
+  const keyOf = (event: RecordedEvent) => {
+    return event.type === 'network' ? `${event.method} ${event.url} ${event.status ?? event.failure}` : null
+  }
+  for (const event of events) {
+    const previous = out[out.length - 1]
+    const key = keyOf(event)
+    if (previous && key && keyOf(previous) === key) {
+      out[out.length - 1] = { ...previous, repeat: (Number(previous.repeat) || 1) + 1, lastId: event.id }
+      continue
+    }
+    out.push(event)
+  }
+  return out
+}
+
+/** Frame file closest to `ms`: the last frame at or before it, else the first one after */
+export function closestFrameFile({ frameFiles, ms }: { frameFiles: string[]; ms: number }): string | null {
+  const frames = frameFiles
+    .map((file) => {
+      return { file, ms: Number(file.match(/^(\d+)(?:-\d+)?\.jpg$/)?.[1]) }
+    })
+    .filter((frame) => {
+      return Number.isFinite(frame.ms)
+    })
+    .sort((a, b) => {
+      return a.ms - b.ms
+    })
+  const before = frames.findLast((frame) => {
+    return frame.ms <= ms
+  })
+  return (before ?? frames[0])?.file ?? null
+}
+
 interface PageHandlers {
   framenavigated: (frame: Frame) => void
   close: () => void
@@ -454,6 +507,10 @@ export class ActionRecorder {
   private framesDir: string | undefined
   private frameCount = 0
   private screencasts = new Map<Page, { session: ICDPSession; onFrame: (event: { data: string; sessionId: number; metadata?: { timestamp?: number } }) => void }>()
+  private toastTaps = new Map<
+    Page,
+    { session: ICDPSession; scriptId: string; onBinding: (event: { name: string; payload: string }) => void } | null
+  >()
 
   constructor(options: ActionRecorderOptions) {
     this.context = options.context
@@ -593,6 +650,20 @@ export class ActionRecorder {
     }
   }
 
+  /** Id of the action that happened at most AFTER_ACTION_WINDOW_MS before `at` (epoch ms) */
+  private actionBefore(at: number): number | undefined {
+    const ms = this.elapsedMs(at)
+    // Actions are timestamped when the recorder reports them, a few ms after the
+    // click handler already started the request. Allow that delay.
+    const action = this.events.findLast((event) => {
+      return event.type === 'action' && typeof event.ms === 'number' && event.ms <= ms + ACTION_REPORT_SLACK_MS
+    })
+    if (!action || ms - Number(action.ms) > AFTER_ACTION_WINDOW_MS) {
+      return undefined
+    }
+    return typeof action.id === 'number' ? action.id : undefined
+  }
+
   private relativeTime(at: number): number {
     return Math.round((at - this.startedAt) / 100) / 10
   }
@@ -690,7 +761,7 @@ export class ActionRecorder {
     this.flushPersist()
     // 2. Let in-flight captures finish. New captures can't be enqueued anymore.
     await this.captureChain.catch(() => {})
-    await this.stopAllScreencasts()
+    await Promise.all([this.stopAllScreencasts(), this.stopAllToastTaps()])
     // 3. Finalize
     this.writeEvent({
       type: 'recording-stopped',
@@ -893,6 +964,7 @@ export class ActionRecorder {
         this.writeEvent({ type: 'page-closed', url: safePageUrl(page) })
         this.pageHandlers.delete(page)
         void this.stopPageScreencast(page)
+        void this.stopToastTap(page)
       },
       // Downloads matter for document-harvesting flows (invoices, statements,
       // shipping labels): the skill needs to know which step produced the file
@@ -931,6 +1003,7 @@ export class ActionRecorder {
     this.pageHandlers.set(page, handlers)
     page.evaluate(installClickRipple).catch(() => {})
     void this.startPageScreencast(page)
+    void this.startToastTap(page)
     page.on('framenavigated', handlers.framenavigated)
     page.on('close', handlers.close)
     page.on('download', handlers.download)
@@ -1069,6 +1142,82 @@ export class ActionRecorder {
     await Promise.all([...this.screencasts.keys()].map((page) => this.stopPageScreencast(page)))
   }
 
+  // Toasts and alerts often explain a failed step that sent no request (client-side
+  // limit checks, validation). A raw CDP binding plus init script reports text
+  // changes in ARIA live regions. Playwright ignores bindingCalled for names it
+  // did not expose, so sharing its CDP session is safe.
+  private async startToastTap(page: Page) {
+    if (this.toastTaps.has(page) || page.isClosed() || this.isInactive()) {
+      return
+    }
+    this.toastTaps.set(page, null)
+    try {
+      const session = await getCDPSessionForPage({ page })
+      if (this.isInactive() || page.isClosed()) {
+        this.toastTaps.delete(page)
+        return
+      }
+      const onBinding = (event: { name: string; payload: string }) => {
+        if (event.name !== TOAST_BINDING || this.state !== 'recording') {
+          return
+        }
+        const toast = (() => {
+          try {
+            return JSON.parse(event.payload) as { role?: string; text?: string }
+          } catch {
+            return null
+          }
+        })()
+        if (!toast?.text) {
+          return
+        }
+        const now = Date.now()
+        this.writeEvent(
+          {
+            type: 'toast',
+            role: toast.role,
+            text: truncate(toast.text, MAX_TOAST_TEXT_CHARS),
+            pageUrl: safePageUrl(page),
+            afterAction: this.actionBefore(now),
+          },
+          now,
+        )
+      }
+      session.on('Runtime.bindingCalled', onBinding)
+      await session.send('Runtime.addBinding', { name: TOAST_BINDING })
+      const { identifier } = await session.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: TOAST_OBSERVER_SOURCE,
+        runImmediately: true,
+      })
+      this.toastTaps.set(page, { session, scriptId: identifier, onBinding })
+      if (this.isInactive()) {
+        await this.stopToastTap(page)
+      }
+    } catch (error) {
+      this.toastTaps.delete(page)
+      this.logger.error('[record] toast tap failed:', error)
+    }
+  }
+
+  private async stopToastTap(page: Page) {
+    const tap = this.toastTaps.get(page)
+    this.toastTaps.delete(page)
+    if (!tap) {
+      return
+    }
+    tap.session.off('Runtime.bindingCalled', tap.onBinding)
+    // The observer stays in the current document, but its calls reach no client
+    // after removeBinding. A later recording reuses the same observer.
+    await Promise.all([
+      tap.session.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: tap.scriptId }).catch(() => {}),
+      tap.session.send('Runtime.removeBinding', { name: TOAST_BINDING }).catch(() => {}),
+    ])
+  }
+
+  private async stopAllToastTaps() {
+    await Promise.all([...this.toastTaps.keys()].map((page) => this.stopToastTap(page)))
+  }
+
   private lastAction(): RecordedEvent | undefined {
     return this.events.findLast((event) => {
       return event.type === 'action'
@@ -1111,16 +1260,20 @@ export class ActionRecorder {
     if (!TRACKED_RESOURCE_TYPES.has(resourceType)) {
       return
     }
-    if (!MUTATING_METHODS.has(request.method().toUpperCase())) {
+    const url = request.url()
+    // Reads matter too (quota checks, polling for job status), but third-party
+    // GETs are mostly widgets and config noise
+    if (!MUTATING_METHODS.has(request.method().toUpperCase()) && !isSameOriginAsFrame(request)) {
       return
     }
-    const url = request.url()
     if (url.startsWith('data:') || url.startsWith('chrome-extension:') || isTelemetryUrl(url)) {
       return
     }
     // Timestamp is captured now (when the request finished), not when the
     // queued capture task eventually writes the event
     const observedAt = Date.now()
+    const startTime = request.timing().startTime
+    const afterAction = this.actionBefore(startTime > 0 ? startTime : observedAt)
     this.enqueueCapture(async () => {
       const response = failure ? null : await request.response().catch(() => null)
       const postData = request.postData()
@@ -1135,16 +1288,13 @@ export class ActionRecorder {
       const contentType = response?.headers()['content-type']
       const responseCapture = await (async (): Promise<{
         body: ReturnType<typeof sanitizeRecordedBody> | null
-        omitted?: 'encoded' | 'too-large' | 'unknown-size' | 'unavailable'
+        omitted?: 'too-large' | 'unknown-size' | 'unavailable'
       }> => {
         if (!response || resourceType === 'document' || !contentType || !TEXTUAL_CONTENT_TYPE.test(contentType)) {
           return { body: null }
         }
-        const headers = response.headers()
-        const contentEncoding = headers['content-encoding']
-        if (contentEncoding && contentEncoding !== 'identity') {
-          return { body: null, omitted: 'encoded' }
-        }
+        // responseBodySize is the wire size, compressed for gzip/br. Compressed
+        // bodies can decode larger than the cap; limitUtf8 truncates them after.
         const sizes = await request.sizes().catch(() => null)
         if (!sizes || !Number.isSafeInteger(sizes.responseBodySize) || sizes.responseBodySize < 0) {
           return { body: null, omitted: 'unknown-size' }
@@ -1177,6 +1327,7 @@ export class ActionRecorder {
           responseBodyRedacted: responseCapture.body?.redacted || undefined,
           responseBodyTruncated: responseCapture.body?.truncated || undefined,
           responseBodyOmitted: responseCapture.omitted,
+          afterAction,
         },
         observedAt,
       )
@@ -1226,6 +1377,56 @@ function installClickRipple() {
     },
     true,
   )
+}
+
+// Runs in the page as an init script. Reports new text of ARIA live regions and
+// toasts through the binding. One observer per document, reused across recordings.
+// Plain JS string: this package compiles without DOM types.
+const TOAST_OBSERVER_SOURCE = `(() => {
+  if (window.__playwriterToastObserver) return
+  window.__playwriterToastObserver = true
+  const bindingName = ${JSON.stringify(TOAST_BINDING)}
+  const selector = '[role="alert"],[role="alertdialog"],[role="status"],[aria-live="polite"],[aria-live="assertive"],[data-sonner-toast]'
+  // bigger regions are page content marked live, not messages
+  const maxRegionChars = 1000
+  const lastText = new WeakMap()
+  const pending = new Set()
+  let timer = null
+  const flush = () => {
+    timer = null
+    for (const region of pending) {
+      if (!region.isConnected) continue
+      const text = (region.innerText || '').replace(/\\s+/g, ' ').trim()
+      if (!text || text.length > maxRegionChars || lastText.get(region) === text) continue
+      lastText.set(region, text)
+      const role = region.getAttribute('role') || (region.hasAttribute('data-sonner-toast') ? 'toast' : 'live')
+      if (typeof window[bindingName] === 'function') window[bindingName](JSON.stringify({ role, text }))
+    }
+    pending.clear()
+  }
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      const node = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement
+      const region = node && node.closest(selector)
+      if (region) pending.add(region)
+      for (const added of mutation.addedNodes) {
+        if (added.nodeType !== Node.ELEMENT_NODE) continue
+        if (added.matches(selector)) pending.add(added)
+        for (const inner of added.querySelectorAll(selector)) pending.add(inner)
+      }
+    }
+    // let the toast finish rendering before reading its text
+    if (pending.size > 0 && !timer) timer = setTimeout(flush, 150)
+  }).observe(document, { subtree: true, childList: true, characterData: true })
+})()`
+
+function isSameOriginAsFrame(request: Request): boolean {
+  try {
+    return new URL(request.url()).origin === new URL(request.frame().url()).origin
+  } catch {
+    // Service worker requests have no frame
+    return false
+  }
 }
 
 function safePageUrl(page: Page): string {

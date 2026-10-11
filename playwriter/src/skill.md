@@ -329,7 +329,7 @@ Before any recorder work, run `playwriter skill` once and read the full output (
 
 The user can start recording from the Playwriter icon menu (right-click the icon, **Record skill**) or ask you to run `playwriter recorder start`. Both write the same event file. The icon menu does not pick a session; the relay attaches to any free extension session (or creates one). Session choice does not matter: extension sessions share the same Chrome tabs. You identify the recording later at **stop** time.
 
-`playwriter recorder start` records everything the user does in the browser (clicks, typing, navigations, mutating xhr/fetch) as events with generated locator strings. It also saves a jpeg of each visual change into a frames folder (`~/.playwriter/recordings/<id>/frames`, files named `<ms>.jpg`). User clicks flash a ripple in those frames. To see the screen at an event, read the jpeg whose filename is closest to that event's `ms`. When the user asks you to "start recording", run it and let them perform their workflow. You may run playwriter commands on that session if they ask (snapshot, inspect, click something). If they did not ask, ask first. Do not drive the workflow yourself.
+`playwriter recorder start` records everything the user does in the browser (clicks, typing, navigations, xhr/fetch, toast and alert text) as events with generated locator strings. It also saves a jpeg of each visual change into a frames folder. User clicks flash a ripple in those frames. To see the screen at an event, open the path printed by `playwriter recorder frame <eventId>`. When the user asks you to "start recording", run it and let them perform their workflow. You may run playwriter commands on that session if they ask (snapshot, inspect, click something). If they did not ask, ask first. Do not drive the workflow yourself.
 
 ```bash
 playwriter recorder start            # reuse the only session, or create one
@@ -340,6 +340,8 @@ playwriter recorder stop 3           # stop recording 3 when several are active
 playwriter recorder events           # thin timeline of the latest recording
 playwriter recorder events -r 3      # events of recording 3
 playwriter recorder events 4 7       # full details of events 4 and 7
+playwriter recorder events --errors   # failed requests, console errors, toasts
+playwriter recorder frame 7 --offset 1000  # screenshot path 1s after event 7
 ```
 
 Run `playwriter recorder stop` when they say done, then `playwriter recorder events -r <id>` to read the events. If stop fails because **more than one recording is active**, the error lists each recording id, session, and current or last page URL. Pick the one that matches the workflow (or ask the user), then `playwriter recorder stop <id>`. Replay the flow with **playwriter** commands only (`playwriter -s <id> -e '...'`), never raw Playwright. The `recorder start` output prints full instructions for turning a recording into a reusable skill: a SKILL.md of markdown instructions with example playwriter commands, plus an importable helper script (`submit.js`, `sdk.js`) for cheap replay. Recording runs inside the relay daemon, so it survives CLI exits. Pass `-s <id>` to record an existing session; the recorder attaches to all Playwriter-enabled tabs and does not open a new tab. A recording auto-stops after 20 minutes or 500 MB of frames and events (`reason: "max-size"`).

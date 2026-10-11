@@ -233,11 +233,16 @@ describe('action recording', () => {
     await clickAt('#password')
     await cdp.send('Input.insertText', { text: 'recorded-password-secret' })
 
-    // trigger the extra recorded signals: console error, in-page POST fetch
-    // (GET is dropped; only mutating xhr/fetch is recorded), and a file upload
+    // trigger the extra recorded signals: console error, toast, in-page fetches
+    // (same-origin GET is kept, cross-origin GET is dropped), and a file upload
     await cdpPage!.evaluate(async () => {
       console.error('recorder-test-error')
-      await fetch('/?get-should-be-dropped')
+      const toast = document.createElement('div')
+      toast.setAttribute('role', 'status')
+      document.body.appendChild(toast)
+      toast.textContent = 'You have reached your concurrent generation limit'
+      await fetch('/?same-origin-get=kept')
+      await fetch('https://www.iana.org/?cross-origin-get-dropped').catch(() => {})
       await fetch('/?access_token=recorded-url-secret&query=visible', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -309,10 +314,14 @@ describe('action recording', () => {
     expect(JSON.stringify(consoleEvents)).toContain('recorder-test-error')
     // mutating in-page fetch keeps useful structure without persisted secrets
     const fetchEvents = events.filter((e) => e.type === 'network' && e.resourceType === 'fetch')
-    expect(fetchEvents.length).toBeGreaterThan(0)
-    expect(fetchEvents.every((e) => e.method === 'POST')).toBe(true)
-    expect(JSON.stringify(fetchEvents)).not.toContain('get-should-be-dropped')
-    expect(fetchEvents[0]).toMatchObject({
+    expect(fetchEvents.map((e) => e.method)).toEqual(['GET', 'POST'])
+    expect(fetchEvents[0].url).toContain('same-origin-get=kept')
+    expect(JSON.stringify(fetchEvents)).not.toContain('cross-origin-get-dropped')
+    // toast text from the role=status region, linked to the password click
+    const toasts = events.filter((e) => e.type === 'toast')
+    expect(toasts.map((e) => [e.role, e.text])).toEqual([['status', 'You have reached your concurrent generation limit']])
+    expect(events.find((e) => e.id === toasts[0].afterAction)?.action).toBeTruthy()
+    expect(fetchEvents[1]).toMatchObject({
       postDataRedacted: true,
       urlRedacted: true,
     })
@@ -323,7 +332,7 @@ describe('action recording', () => {
     // every event has a sequential id for the drill-down view
     expect(events.map((e) => e.id)).toEqual(events.map((_, i) => i + 1))
     // thin projection replaces heavy payloads with sizes
-    const thinFetch = projectThinEvent(fetchEvents[0])
+    const thinFetch = projectThinEvent(fetchEvents[1])
     expect(thinFetch.responseBody).toBeUndefined()
     expect(thinFetch.postData).toBeUndefined()
     expect(typeof thinFetch.postDataSize).toBe('number')

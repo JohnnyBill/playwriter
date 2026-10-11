@@ -1711,12 +1711,15 @@ cli
   .option('-r, --recording <id>', 'Recording ID (defaults to the latest recording)')
   .option('--host <host>', 'Remote relay server host')
   .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
-  .option('--type <type>', 'Only print events of this type (e.g. action, network, page-error)')
+  .option('--type <type>', 'Only print events of this type (e.g. action, network, toast, page-error)')
+  .option('--errors', 'Only print failed requests (status >= 400 or network failure), console errors, page errors and toasts')
+  .option('--exclude <regex>', 'Drop network events whose url matches this regex (e.g. "analytics|StylesService")')
   .option('--full', 'Print full events for the whole timeline instead of the thin view')
   .example('playwriter recorder events        # latest recording, thin timeline')
-  .example(`playwriter recorder events | jq -r '[.id, .t, .type, (.code // .url // empty)] | @tsv'`)
+  .example(`playwriter recorder events | jq -r '[.id, .t, .type, (.code // .url // .text // empty)] | @tsv'`)
   .example('playwriter recorder events 4 7    # full details of events 4 and 7')
   .example('playwriter recorder events -r 2 --type action   # actions of recording 2')
+  .example('playwriter recorder events --errors              # why steps failed')
   .action(async (eventIds, options) => {
     const recordingId = options.recording
     // When defaulting to the latest recording while several recordings are
@@ -1771,30 +1774,91 @@ cli
       }
       return await response.text()
     })()
-    const { projectThinEvent, parseRecording } = await import('./action-recorder.js')
+    const { projectThinEvent, parseRecording, isProblemEvent, collapseRepeatedNetwork } = await import('./action-recorder.js')
     const invalidIds = (eventIds || []).filter((id) => !/^\d+$/.test(String(id)))
     if (invalidIds.length > 0) {
       console.error(`Invalid event ids: ${invalidIds.join(', ')}. Event ids are the numeric 'id' field from the timeline.`)
       process.exit(1)
     }
+    const exclude = (() => {
+      if (!options.exclude) {
+        return null
+      }
+      try {
+        return new RegExp(String(options.exclude), 'i')
+      } catch (error: any) {
+        console.error(`Invalid --exclude regex: ${error.message}`)
+        process.exit(1)
+      }
+    })()
     const requestedIds = new Set((eventIds || []).map((id) => Number(id)))
     const events = parseRecording(content)
-    for (const event of events) {
-      if (requestedIds.size > 0) {
+    if (requestedIds.size > 0) {
+      for (const event of events) {
         if (event.id !== undefined && requestedIds.has(Number(event.id))) {
           console.log(JSON.stringify(event))
         }
-        continue
       }
+      return
+    }
+    const selected = events.filter((event) => {
       if (options.type && event.type !== options.type) {
-        continue
+        return false
       }
-      if (options.full) {
+      if (options.errors && !isProblemEvent(event)) {
+        return false
+      }
+      return !(exclude && event.type === 'network' && exclude.test(String(event.url)))
+    })
+    if (options.full) {
+      for (const event of selected) {
         console.log(JSON.stringify(event))
-        continue
       }
+      return
+    }
+    for (const event of collapseRepeatedNetwork(selected)) {
       console.log(JSON.stringify(projectThinEvent(event)))
     }
+  })
+
+cli
+  .command(
+    'recorder frame <eventId>',
+    'Print the path of the screencast frame closest to an event, to see the screen at that moment. Local relay only.',
+  )
+  .option('-r, --recording <id>', 'Recording ID (defaults to the latest recording)')
+  .option('--offset <ms>', z.number().default(0).describe('Milliseconds after the event. Use 1000 to see the result of a click'))
+  .example('playwriter recorder frame 42              # screen when event 42 happened')
+  .example('playwriter recorder frame 42 --offset 1500 # screen 1.5s later')
+  .action(async (eventId, options) => {
+    const { recordingFilePath, latestRecordingId, parseRecording, closestFrameFile } = await import('./action-recorder.js')
+    const resolvedId = options.recording ? String(options.recording) : latestRecordingId()
+    if (!resolvedId) {
+      console.error(`No recordings found. Start one with 'playwriter recorder start'.`)
+      process.exit(1)
+    }
+    const filePath = recordingFilePath(resolvedId)
+    if (!fs.existsSync(filePath)) {
+      console.error(`Recording ${resolvedId} not found at ${filePath}`)
+      process.exit(1)
+    }
+    const events = parseRecording(fs.readFileSync(filePath, 'utf-8'))
+    const event = events.find((item) => Number(item.id) === Number(eventId))
+    if (!event || typeof event.ms !== 'number') {
+      console.error(`Event ${eventId} not found in recording ${resolvedId}`)
+      process.exit(1)
+    }
+    const framesDir = events.find((item) => item.type === 'recording-started')?.framesDir
+    if (typeof framesDir !== 'string' || !fs.existsSync(framesDir)) {
+      console.error(`Recording ${resolvedId} has no frames folder`)
+      process.exit(1)
+    }
+    const frame = closestFrameFile({ frameFiles: fs.readdirSync(framesDir), ms: event.ms + Number(options.offset) })
+    if (!frame) {
+      console.error(`Recording ${resolvedId} has no frames`)
+      process.exit(1)
+    }
+    console.log(path.join(framesDir, frame))
   })
 
 cli

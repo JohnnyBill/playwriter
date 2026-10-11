@@ -6,7 +6,10 @@ import path from 'node:path'
 import type { BrowserContext } from '@xmorse/playwright-core'
 import {
   ActionRecordingManager,
+  closestFrameFile,
+  collapseRepeatedNetwork,
   formatAmbiguousRecordingsError,
+  isProblemEvent,
   isTelemetryUrl,
   MAX_ACTIVE_RECORDINGS,
   parseRecording,
@@ -402,5 +405,58 @@ describe('projectThinEvent', () => {
     expect(String(thin.message).startsWith('x')).toBe(true)
     expect(String(thin.message).length).toBeLessThan(250)
     expect(String(thin.message)).toContain('more chars')
+  })
+})
+
+describe('reading a recording', () => {
+  test('collapses repeated requests, filters problems and finds frames', () => {
+    const events = [
+      { id: 1, t: 0, ms: 0, type: 'action', code: 'click' },
+      { id: 2, t: 0.1, ms: 100, type: 'network', method: 'POST', url: 'https://a.com/list', status: 200 },
+      { id: 3, t: 0.1, ms: 110, type: 'network', method: 'POST', url: 'https://a.com/list', status: 200 },
+      { id: 4, t: 0.1, ms: 120, type: 'network', method: 'POST', url: 'https://a.com/list', status: 200 },
+      { id: 5, t: 0.2, ms: 200, type: 'network', method: 'POST', url: 'https://a.com/generate', status: 403 },
+      { id: 6, t: 0.3, ms: 300, type: 'toast', role: 'status', text: 'Concurrent limit reached' },
+      { id: 7, t: 0.4, ms: 400, type: 'network', method: 'POST', url: 'https://a.com/list', status: 200 },
+    ]
+    expect(
+      collapseRepeatedNetwork(events).map((event) => {
+        return [event.id, event.repeat, event.lastId]
+      }),
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          1,
+          undefined,
+          undefined,
+        ],
+        [
+          2,
+          3,
+          4,
+        ],
+        [
+          5,
+          undefined,
+          undefined,
+        ],
+        [
+          6,
+          undefined,
+          undefined,
+        ],
+        [
+          7,
+          undefined,
+          undefined,
+        ],
+      ]
+    `)
+    expect(events.filter(isProblemEvent).map((event) => event.id)).toEqual([5, 6])
+    const frameFiles = ['900.jpg', '100.jpg', '100-2.jpg', '450.jpg', 'notes.txt']
+    expect(closestFrameFile({ frameFiles, ms: 50 })).toBe('100.jpg')
+    expect(closestFrameFile({ frameFiles, ms: 449 })).toBe('100-2.jpg')
+    expect(closestFrameFile({ frameFiles, ms: 5000 })).toBe('900.jpg')
+    expect(closestFrameFile({ frameFiles: [], ms: 0 })).toBe(null)
   })
 })
