@@ -17,7 +17,6 @@ const CLOSE_FAILED_TO_CONTACT = 4009
 const CLOSE_LOCAL_TIMEOUT = 4010
 const CLOSE_LOCAL_WS_ERROR = 4012
 const CLOSE_TUNNEL_ID_IN_USE = 4409
-const UPSTREAM_WAIT_MS = 5_000
 const DOWNSTREAM_OPEN_TIMEOUT_MS = 10_000
 const RATE_LIMIT_PERIOD_SECONDS = 60
 
@@ -76,7 +75,6 @@ function extractTunnelId(hostname: string): string | null {
 }
 
 export class RemoteControlTunnel extends DurableObject<Env> {
-  private waitingForUpstream = new Set<() => void>()
   private pendingDownstreams = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -102,7 +100,9 @@ export class RemoteControlTunnel extends DurableObject<Env> {
       return this.openUpstream()
     }
     if (path.replace(/\/$/, '') === '/extension') {
-      return this.openDownstreamAndContact(request)
+      // No upstream closes 4008 at once. Never wait for one: relays redial
+      // offline ids in a loop, and a held request keeps the DO awake (billed).
+      return this.openDownstream(request.headers)
     }
     return new Response('Not Found', { status: 404 })
   }
@@ -170,13 +170,6 @@ export class RemoteControlTunnel extends DurableObject<Env> {
     closeSocket({ socket, code: CLOSE_INTERNAL_ERROR, reason: 'WebSocket error' })
   }
 
-  private async openDownstreamAndContact(request: Request): Promise<Response> {
-    if (!this.getUpstream()) {
-      await this.waitForUpstream()
-    }
-    return this.openDownstream(request.headers)
-  }
-
   private openUpstream(): Response {
     if (this.getUpstream()) {
       return createClosingWebSocketResponse({
@@ -192,11 +185,6 @@ export class RemoteControlTunnel extends DurableObject<Env> {
       connectedAt: Date.now(),
     } satisfies SocketAttachment)
     server.send(JSON.stringify({ type: 'upstream_accepted' }))
-
-    this.waitingForUpstream.forEach((complete) => {
-      complete()
-    })
-    this.waitingForUpstream.clear()
     return new Response(null, { status: 101, webSocket: client })
   }
 
@@ -262,18 +250,6 @@ export class RemoteControlTunnel extends DurableObject<Env> {
       }
       return latest
     }, null)?.socket || null
-  }
-
-  private waitForUpstream(): Promise<void> {
-    return new Promise((resolve) => {
-      const complete = () => {
-        clearTimeout(timeout)
-        this.waitingForUpstream.delete(complete)
-        resolve()
-      }
-      const timeout = setTimeout(complete, UPSTREAM_WAIT_MS)
-      this.waitingForUpstream.add(complete)
-    })
   }
 
   private sendToUpstream(upstream: WebSocket, message: TraforoUpstreamMessage): boolean {

@@ -37,7 +37,7 @@ import { createCdpLogger, type CdpLogEntry, type CdpLogger } from './cdp-log.js'
 import { appendSessionToWsUrl } from './chrome-discovery.js'
 import * as relayState from './relay-state.js'
 import { WebSocket as NodeWebSocket } from 'ws'
-import { getRemoteDialRetryMs, parseRemoteControlUrl, type RemoteHelloMessage } from './remote-control.js'
+import { getRemoteDialRetryMs, parseRemoteControlUrl, REMOTE_DIAL_GIVE_UP_MS, type RemoteHelloMessage } from './remote-control.js'
 import type { CloudAuth } from './cloud-client.js'
 import { recordExecute, trackEvent, type SessionKind } from './telemetry.js'
 
@@ -2013,10 +2013,16 @@ export async function startPlayWriterCDPRelayServer({
     closed: boolean
     retryTimer: ReturnType<typeof setTimeout> | null
     sessionIds: Set<string>
+    /** Consecutive dials that closed before any message. Drives the backoff. */
+    failedAttempts: number
+    /** When the current streak of failed dials started. */
+    offlineSince: number | null
   }
   const remoteDials = new Map<string, RemoteDial>()
   const sessionRemoteUrlKeys = new Map<string, string>()
 
+  // A dial with no socket and no retry timer gave up. Every failed dial wakes
+  // the tunnel's Durable Object, so offline ids back off and then stop.
   function startRemoteDial(dial: RemoteDial): void {
     if (dial.closed) {
       return
@@ -2044,12 +2050,19 @@ export async function startPlayWriterCDPRelayServer({
       },
     }
     let opened = false
+    // `open` fires even for 4008 (HTTP 101, then close), so only a message proves the tunnel works.
+    let receivedMessage = false
 
     socket.on('open', () => {
       opened = true
       handlers.onOpen(adapter)
     })
     socket.on('message', (raw, isBinary) => {
+      if (!receivedMessage) {
+        receivedMessage = true
+        dial.failedAttempts = 0
+        dial.offlineSince = null
+      }
       const payload = isBinary ? (raw as Buffer) : raw.toString()
       void handlers.onMessage(payload, adapter)
     })
@@ -2064,7 +2077,15 @@ export async function startPlayWriterCDPRelayServer({
       if (dial.closed) {
         return
       }
-      const retryMs = getRemoteDialRetryMs(code)
+      if (!receivedMessage) {
+        dial.failedAttempts++
+        dial.offlineSince ??= Date.now()
+      }
+      if (dial.offlineSince !== null && Date.now() - dial.offlineSince >= REMOTE_DIAL_GIVE_UP_MS) {
+        logger?.log(pc.yellow(`Remote extension unreachable since ${new Date(dial.offlineSince).toISOString()}, stopped dialing until a session uses it`))
+        return
+      }
+      const retryMs = getRemoteDialRetryMs({ closeCode: code, failedAttempts: dial.failedAttempts })
       logger?.log(pc.yellow(`Remote extension dial closed (code=${code}), retrying in ${retryMs}ms`))
       dial.retryTimer = setTimeout(() => {
         dial.retryTimer = null
@@ -2073,7 +2094,7 @@ export async function startPlayWriterCDPRelayServer({
     })
   }
 
-  async function connectRemoteExtension({ url }: { url: string }): Promise<relayState.ExtensionEntry> {
+  async function connectRemoteExtension({ url, sessionId }: { url: string; sessionId: string }): Promise<relayState.ExtensionEntry> {
     const { wsUrl } = parseRemoteControlUrl(url)
     // Key by the dialed wsUrl: it is unique per tunnel id in every accepted input
     // form, so two shared browsers on one host never collapse into one dial.
@@ -2081,11 +2102,26 @@ export async function startPlayWriterCDPRelayServer({
     const stableKey = `remote:${crypto.createHash('sha256').update(urlKey).digest('hex')}`
 
     let dial = remoteDials.get(urlKey)
-    if (!dial) {
-      dial = { urlKey, wsUrl, stableKey, ws: null, closed: false, retryTimer: null, sessionIds: new Set() }
+    if (dial) {
+      wakeRemoteDial(dial)
+    } else {
+      dial = {
+        urlKey,
+        wsUrl,
+        stableKey,
+        ws: null,
+        closed: false,
+        retryTimer: null,
+        sessionIds: new Set(),
+        failedAttempts: 0,
+        offlineSince: null,
+      }
       remoteDials.set(urlKey, dial)
       startRemoteDial(dial)
     }
+    // Own the dial while waiting, so an overlapping failed request cannot close it.
+    dial.sessionIds.add(sessionId)
+    sessionRemoteUrlKeys.set(sessionId, urlKey)
 
     // Wait for the tunnel roundtrip: dial → traforo → extension hello + Target.attachedToTarget.
     const deadline = Date.now() + 15000
@@ -2096,6 +2132,8 @@ export async function startPlayWriterCDPRelayServer({
       }
       await new Promise((resolve) => setTimeout(resolve, 200))
     }
+    // A failed `session new` must not leave the dial redialing forever.
+    releaseRemoteDialForSession(sessionId)
     const entry = relayState.findExtensionByStableKey(store.getState(), stableKey)
     if (entry?.ws) {
       // Connected but no tab announced yet — surface a clear error.
@@ -2123,25 +2161,47 @@ export async function startPlayWriterCDPRelayServer({
       return
     }
     logger?.log(pc.yellow('Closing remote extension dial because no sessions remain'))
+    closeRemoteDial(dial, 'No sessions left')
+  }
+
+  /** Using a session dials now, with a fresh backoff, even if the dial gave up. */
+  function wakeRemoteDialForSession(sessionId: string): void {
+    const urlKey = sessionRemoteUrlKeys.get(sessionId)
+    const dial = urlKey ? remoteDials.get(urlKey) : undefined
+    if (dial) {
+      wakeRemoteDial(dial)
+    }
+  }
+
+  function wakeRemoteDial(dial: RemoteDial): void {
+    if (dial.closed || dial.ws) {
+      return
+    }
+    if (dial.retryTimer) {
+      clearTimeout(dial.retryTimer)
+      dial.retryTimer = null
+    }
+    dial.failedAttempts = 0
+    dial.offlineSince = null
+    startRemoteDial(dial)
+  }
+
+  function closeRemoteDial(dial: RemoteDial, reason: string): void {
     dial.closed = true
     if (dial.retryTimer) {
       clearTimeout(dial.retryTimer)
       dial.retryTimer = null
     }
-    dial.ws?.close(1000, 'No sessions left')
-    remoteDials.delete(urlKey)
+    dial.ws?.close(1000, reason)
+    if (remoteDials.get(dial.urlKey) === dial) {
+      remoteDials.delete(dial.urlKey)
+    }
   }
 
   function closeAllRemoteDials(): void {
-    for (const dial of remoteDials.values()) {
-      dial.closed = true
-      if (dial.retryTimer) {
-        clearTimeout(dial.retryTimer)
-        dial.retryTimer = null
-      }
-      dial.ws?.close(1000, 'Relay shutting down')
+    for (const dial of [...remoteDials.values()]) {
+      closeRemoteDial(dial, 'Relay shutting down')
     }
-    remoteDials.clear()
     sessionRemoteUrlKeys.clear()
   }
 
@@ -2295,6 +2355,7 @@ export async function startPlayWriterCDPRelayServer({
         )
       }
       recordExecute()
+      wakeRemoteDialForSession(sessionId)
       // Touch cloud session activity tracking if this session is cloud-backed
       const cloudTracking = cloudSessionTracking.get(sessionId)
       if (cloudTracking) {
@@ -2336,6 +2397,7 @@ export async function startPlayWriterCDPRelayServer({
       if (!existingExecutor) {
         return c.json({ error: `Session ${sessionId} not found. Run 'playwriter session new' first.` }, 404)
       }
+      wakeRemoteDialForSession(sessionId)
       const { context } = await existingExecutor.reset()
 
       return c.json({
@@ -2494,13 +2556,10 @@ export async function startPlayWriterCDPRelayServer({
       }
       let remoteEntry: relayState.ExtensionEntry
       try {
-        remoteEntry = await connectRemoteExtension({ url: body.remoteControlUrl })
+        remoteEntry = await connectRemoteExtension({ url: body.remoteControlUrl, sessionId })
       } catch (error) {
         return c.json({ error: error instanceof Error ? error.message : String(error) }, 502)
       }
-      const { wsUrl } = parseRemoteControlUrl(body.remoteControlUrl)
-      remoteDials.get(wsUrl)?.sessionIds.add(sessionId)
-      sessionRemoteUrlKeys.set(sessionId, wsUrl)
 
       const manager = await getExecutorManager()
       const executor = manager.getExecutor({

@@ -377,12 +377,19 @@ export const TRAFORO_TUNNEL_OFFLINE_CLOSE_CODE = 4008
 /** Matches extension/src/remote-tunnel.ts RECONNECT_DELAY_MS. */
 const REMOTE_UPSTREAM_RECONNECT_MS = 3_000
 
-/** 4008: retry soon. Other drops: wait past the extension's 3s upstream reconnect. */
-export function getRemoteDialRetryMs(closeCode: number): number {
-  if (closeCode === TRAFORO_TUNNEL_OFFLINE_CLOSE_CODE) {
-    return 500
-  }
-  return REMOTE_UPSTREAM_RECONNECT_MS + 1_000
+const REMOTE_DIAL_MAX_RETRY_MS = 60_000
+
+/** Stop background redials after the tunnel stayed unreachable this long. Using the session dials again. */
+export const REMOTE_DIAL_GIVE_UP_MS = 10 * 60_000
+
+/**
+ * 4008 (offline): base 1s. Other drops: wait past the extension's 3s upstream
+ * reconnect. Each dial that fails before any message doubles the delay, so an
+ * id whose user stopped sharing is not redialed every few seconds forever.
+ */
+export function getRemoteDialRetryMs({ closeCode, failedAttempts }: { closeCode: number; failedAttempts: number }): number {
+  const baseMs = closeCode === TRAFORO_TUNNEL_OFFLINE_CLOSE_CODE ? 1_000 : REMOTE_UPSTREAM_RECONNECT_MS + 1_000
+  return Math.min(baseMs * 2 ** Math.max(0, failedAttempts - 1), REMOTE_DIAL_MAX_RETRY_MS)
 }
 
 export const REMOTE_EXTENSION_NOT_CONNECTED_ERROR = dedent`

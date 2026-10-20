@@ -230,6 +230,24 @@ describe('remote control tunnel', () => {
     }
   })
 
+  // Relays redial offline tunnels in a loop. Holding the request open while
+  // waiting for an upstream kept the DO awake (billed) for most of every cycle.
+  test('closes a dial with 4008 at once when no upstream is connected', async () => {
+    const stub = env.REMOTE_CONTROL_TUNNEL.get(env.REMOTE_CONTROL_TUNNEL.idFromName(crypto.randomUUID()))
+    const startedAt = Date.now()
+    const response = await stub.fetch('https://remote-control.test/extension', {
+      headers: { Upgrade: 'websocket' },
+    })
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    const socket = response.webSocket
+    if (!socket) {
+      throw new Error(`Expected WebSocket upgrade, got ${response.status}`)
+    }
+    const closePromise = waitForClose(socket)
+    socket.accept()
+    await expect(closePromise).resolves.toMatchObject({ code: 4008 })
+  })
+
   test('rejects a second upstream and drops downstreams when sharing stops', async () => {
     const id = env.REMOTE_CONTROL_TUNNEL.idFromName(crypto.randomUUID())
     const stub = env.REMOTE_CONTROL_TUNNEL.get(id)

@@ -161,21 +161,42 @@ describe('remote-control', () => {
     expect(getRemoteExtensionMethodRejection('ghost-browser')).toMatchInlineSnapshot(`"Ghost Browser APIs are not available over Remote control."`)
   })
 
-  test('retries the public dial sooner after offline close 4008 than after a drop', () => {
-    expect(
-      [
-        getRemoteDialRetryMs(TRAFORO_TUNNEL_OFFLINE_CLOSE_CODE),
-        getRemoteDialRetryMs(1006),
-        getRemoteDialRetryMs(1012),
-      ],
-    ).toMatchInlineSnapshot(`
-      [
-        500,
-        4000,
-        4000,
-      ]
+  // Every failed dial wakes the tunnel Durable Object. A 500ms retry on 4008
+  // kept offline tunnels awake 24/7, so failed dials back off up to 60s.
+  test('backs off failed public dials, 4008 from 1s and drops from 4s', () => {
+    const delays = (closeCode: number) => {
+      return [0, 1, 2, 3, 4, 6, 7, 10].map((failedAttempts) => {
+        return getRemoteDialRetryMs({ closeCode, failedAttempts })
+      })
+    }
+    expect({
+      offline: delays(TRAFORO_TUNNEL_OFFLINE_CLOSE_CODE),
+      drop: delays(1006),
+    }).toMatchInlineSnapshot(`
+      {
+        "drop": [
+          4000,
+          4000,
+          8000,
+          16000,
+          32000,
+          60000,
+          60000,
+          60000,
+        ],
+        "offline": [
+          1000,
+          1000,
+          2000,
+          4000,
+          8000,
+          32000,
+          60000,
+          60000,
+        ],
+      }
     `)
-    expect(getRemoteDialRetryMs(1006)).toBeGreaterThan(3000)
+    expect(getRemoteDialRetryMs({ closeCode: 1006, failedAttempts: 0 })).toBeGreaterThan(3000)
     expect(REMOTE_EXTENSION_NOT_CONNECTED_ERROR).toMatchInlineSnapshot(`"Could not reach the remote-control browser. The tunnel dropped. Ask the user to confirm Remote control is still on, then retry. If they clicked Stop sharing, they need to share a fresh id."`)
     expect(REMOTE_EXTENSION_NOT_CONNECTED_ERROR).not.toContain('chromewebstore')
   })
