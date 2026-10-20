@@ -11,6 +11,12 @@ keep playwriter/src/skill.md token-efficient. Keep tab-group instructions brief,
 
 breaking changes to the WS protocol MUST never be made. publishing the extension code will never be instant, which means the extension must keep working with newer versions of the MCP and WS relay server.
 
+Chrome Web Store review can delay an extension release by days or weeks. Users can run a new CLI, MCP or relay with an old extension during this time. CLI, MCP and relay code MUST stay compatible with older extension versions:
+
+- never require a new extension message, command or field without a fallback
+- detect missing extension features at runtime, then fall back or show a clear "update the extension" error
+- ship the extension side of a feature first. Make the CLI depend on it only after the store has published that version
+
 ## architecture
 
 - user installs the extension in chrome. we assume there is only one chrome window for now, the first opened.
