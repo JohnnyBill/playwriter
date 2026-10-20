@@ -3318,12 +3318,18 @@ chrome.tabs.onActivated.addListener(onTabActivated)
 chrome.action.onClicked.addListener(onActionClicked)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   void updateIcons()
-  if (changeInfo.groupId !== undefined) {
+  // Chrome 155 can create child tabs inside the group without a later groupId change.
+  // Recorded events: https://github.com/remorses/playwriter/issues/133#issuecomment-6278536708
+  const isUntrackedGroupedTabLoading =
+    changeInfo.status === 'loading' &&
+    tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE &&
+    !store.getState().tabs.has(tabId)
+  if (changeInfo.groupId !== undefined || isUntrackedGroupedTabLoading) {
     // Queue tab group operations to serialize with syncTabGroup and disconnectEverything
     tabGroupQueue = tabGroupQueue
       .then(async () => {
-        // Query managed groups by title - no stale cached IDs. changeInfo.groupId
-        // is only the trigger: this task runs later on the queue, so the live
+        // Query managed groups by title - no stale cached IDs. The event is only
+        // the trigger: this task runs later on the queue, so the live
         // group membership is re-read for every decision (a stale event id could
         // otherwise adopt a group the user already dragged the tab out of).
         const managedTitles = await getManagedTabGroupTitles()

@@ -77,6 +77,7 @@ export async function setupTestContext({
   tempDirPrefix,
   toggleExtension = false,
   additionalExtensions = [],
+  executablePath = process.env.PLAYWRITER_TEST_BROWSER,
 }: {
   port: number
   tempDirPrefix: string
@@ -84,6 +85,7 @@ export async function setupTestContext({
   toggleExtension?: boolean
   /** Additional extension paths to load alongside the main playwriter extension */
   additionalExtensions?: string[]
+  executablePath?: string
 }): Promise<TestContext> {
   await killPortProcess({ port }).catch(() => {})
 
@@ -103,6 +105,7 @@ export async function setupTestContext({
   const allExtensionPaths = [extensionPath, ...additionalExtensions].join(',')
 
   const browserContext = await chromium.launchPersistentContext(userDataDir, {
+    executablePath,
     channel: 'chromium',
     headless: !process.env.HEADFUL,
     colorScheme: 'dark',
