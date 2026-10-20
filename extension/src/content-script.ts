@@ -51,7 +51,7 @@ function installPlaywriterContentScript(): void {
     const toast = document.createElement('div')
     toast.textContent = message
     toast.style.cssText = [
-      'background:#1c1c1c',
+      'background:#393B44',
       'border:1px solid rgba(255,255,255,0.1)',
       'border-radius:9999px',
       'padding:6px 14px',

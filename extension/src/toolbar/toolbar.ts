@@ -41,7 +41,6 @@ export function initPlaywriterToolbar(): void {
   let isRecording = false
   let startInFlight = false
   let pendingStop = false
-  let isDragging = false
   // Declared here so the hoisted setPinMode can reference it before assignment.
   let pinBtn!: HTMLButtonElement
   // Shift-click multi-select: accumulated pins while pin mode stays active.
@@ -50,50 +49,23 @@ export function initPlaywriterToolbar(): void {
   let accumulatedPins: { n: number; element: Element; prevOutline: string; prevOffset: string }[] =
     []
 
-  // ── Position persistence via localStorage (percentages of viewport) ────────
-
-  const POS_KEY = '__playwriter_toolbar_pos'
-
-  function loadPosition(): { leftPct: number; topPct: number } | null {
-    try {
-      const raw = localStorage.getItem(POS_KEY)
-      if (!raw) return null
-      const parsed = JSON.parse(raw)
-      if (typeof parsed.leftPct === 'number' && typeof parsed.topPct === 'number') {
-        return parsed
-      }
-    } catch {}
-    return null
-  }
-
-  function savePosition(leftPct: number, topPct: number): void {
-    try {
-      localStorage.setItem(POS_KEY, JSON.stringify({ leftPct, topPct }))
-    } catch {}
-  }
-
   // ── Create shadow-DOM host ─────────────────────────────────────────────────
 
   const host = document.createElement('div')
   host.setAttribute('data-playwriter-toolbar', '1')
 
-  const savedPos = loadPosition()
-  const initLeft = savedPos ? `${savedPos.leftPct}%` : '50%'
-  const initTop = savedPos ? `${savedPos.topPct}%` : '12px'
-  let intendedLeft = initLeft
-  let intendedTop = initTop
-
+  // Fixed at the top center, flush with the viewport edge, in both states.
   // pointer-events:none on the host so the shadow-DOM children (pointer-events:all)
   // control interactivity without the host element itself blocking page events.
-  // No contain:paint — it clips box-shadow to the host's rectangular bounds.
   host.style.cssText =
-    `all:initial;position:fixed;top:${initTop};left:${initLeft};transform:translateX(-50%);z-index:2147483647;pointer-events:none;opacity:1;visibility:visible;display:block;filter:none;font-size:0;line-height:0;contain:layout style;`
+    `all:initial;position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none;opacity:1;visibility:visible;display:block;filter:none;font-size:0;line-height:0;contain:layout style;`
 
   // Closed shadow root: page scripts cannot access our toolbar DOM
   const shadow = host.attachShadow({ mode: 'closed' })
 
   const styleEl = document.createElement('style')
-  // Dark egaki-inspired toolbar: #1c1c1c bg, white/10 border, pill shape
+  // Dark toolbar: #393B44 bg, white/10 border, flush with the top
+  // edge like the collapsed tab, so both states look like the same tab.
   styleEl.textContent = `
     *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
     .stack {
@@ -107,12 +79,12 @@ export function initPlaywriterToolbar(): void {
       align-items: center;
       gap: 2px;
       padding: 2px 4px;
-      background: #1c1c1c;
+      background: #393B44;
       border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 9999px;
+      border-top: none;
+      border-radius: 0 0 8px 8px;
       pointer-events: all;
       user-select: none;
-      box-shadow: 0 12px 60px rgba(0,0,0,0.6), 0 4px 20px rgba(0,0,0,0.4), 0 0 0 1px rgba(0,0,0,0.15);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       contain: layout style;
       opacity: 1;
@@ -126,14 +98,54 @@ export function initPlaywriterToolbar(): void {
         transition: none;
       }
     }
+    /* Collapsed state (default): a small tab flush with the top edge, like react-scan.
+       Clicking it expands the toolbar; the toolbar x button collapses it again. */
+    .tab {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      background: #393B44;
+      color: rgba(161,161,170,1);
+      cursor: pointer;
+      pointer-events: all;
+      padding: 0;
+      outline: none;
+      opacity: 1;
+      transition: color 0.15s, opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      @starting-style {
+        opacity: 0;
+      }
+    }
+    .tab svg {
+      width: 9px;
+      height: 9px;
+    }
+    .tab:hover {
+      color: rgba(228,228,231,1);
+    }
+    .stack.collapsed .tab {
+      display: flex;
+    }
+    .stack.collapsed .toolbar,
+    .stack.collapsed .remote-panel {
+      display: none;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .tab {
+        transition: none;
+      }
+    }
     .separator {
-      width: 0;
+      width: 1px;
       height: 15px;
       background: rgba(255,255,255,0.15);
-      margin: 0;
+      margin: 0 2px;
       flex-shrink: 0;
-      opacity: 0;
-      transition: width 200ms cubic-bezier(0.23, 1, 0.32, 1), margin 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .btn {
       display: flex;
@@ -169,30 +181,6 @@ export function initPlaywriterToolbar(): void {
     }
     .btn.active:hover {
       background: rgba(255,255,255,0.18);
-    }
-    .drag-handle {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 19px;
-      height: 26px;
-      border: none;
-      border-radius: 7px;
-      background: transparent;
-      color: rgba(161,161,170,0.5);
-      cursor: grab;
-      transition: background 0.15s, color 0.15s;
-      padding: 0;
-      flex-shrink: 0;
-      outline: none;
-    }
-    .drag-handle:hover {
-      background: rgba(255,255,255,0.08);
-      color: rgba(161,161,170,0.8);
-    }
-    .drag-handle:active, .drag-handle.dragging {
-      cursor: grabbing;
-      color: rgba(228,228,231,0.9);
     }
     .record-btn {
       display: flex;
@@ -235,36 +223,10 @@ export function initPlaywriterToolbar(): void {
       background: rgba(125,211,252,0.18);
       color: #bae6fd;
     }
-    /* Icons only by default. Labels expand on hover; interpolate-size lets width animate to auto. */
     .toolbar .label {
       display: block;
-      width: 0;
-      margin-left: 0;
-      overflow: hidden;
-      white-space: nowrap;
-      opacity: 0;
-      interpolate-size: allow-keywords;
-      transition: width 200ms cubic-bezier(0.23, 1, 0.32, 1), margin-left 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
-    }
-    .stack:hover .toolbar .label,
-    .toolbar:has(:focus-visible) .label,
-    .stack:has(.remote-panel.open) .toolbar .label {
-      width: auto;
       margin-left: 5px;
-      opacity: 1;
-    }
-    .stack:hover .separator,
-    .toolbar:has(:focus-visible) .separator,
-    .stack:has(.remote-panel.open) .separator {
-      width: 1px;
-      margin: 0 2px;
-      opacity: 1;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .toolbar .label,
-      .separator {
-        transition: none;
-      }
+      white-space: nowrap;
     }
     .remote-btn .chevron {
       margin-left: 4px;
@@ -282,7 +244,7 @@ export function initPlaywriterToolbar(): void {
       gap: 2px;
       margin-top: 6px;
       padding: 4px;
-      background: #1c1c1c;
+      background: #393B44;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 10px;
       pointer-events: all;
@@ -296,6 +258,7 @@ export function initPlaywriterToolbar(): void {
     /* The Playwright fork sets data-playwriter-agent on the host before each
        hit-target check (injectedScript.ts), so agent clicks pass through. */
     :host([data-playwriter-agent]) .toolbar,
+    :host([data-playwriter-agent]) .tab,
     :host([data-playwriter-agent]) .remote-panel {
       pointer-events: none;
     }
@@ -383,7 +346,7 @@ export function initPlaywriterToolbar(): void {
       left: 50%;
       transform: translateX(-50%);
       padding: 5px 10px;
-      background: #1c1c1c;
+      background: #393B44;
       border: 1px solid rgba(255,255,255,0.1);
       color: rgba(228,228,231,1);
       font-size: 11px;
@@ -411,7 +374,7 @@ export function initPlaywriterToolbar(): void {
   toolbarEl.setAttribute('aria-label', 'Playwriter tools')
 
   const stack = document.createElement('div')
-  stack.className = 'stack'
+  stack.className = 'stack collapsed'
 
   shadow.appendChild(styleEl)
   shadow.appendChild(stack)
@@ -428,7 +391,7 @@ export function initPlaywriterToolbar(): void {
   toastStyle.textContent = `
     .toast {
       position: absolute;
-      background: #1c1c1c;
+      background: #393B44;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 9999px;
       padding: 6px 14px;
@@ -577,7 +540,7 @@ export function initPlaywriterToolbar(): void {
   // The shadow root is closed, so a page cannot click the buttons directly, but the
   // host lives in the page's light DOM and page CSS can still restyle it. The host
   // therefore uses `all:initial` and these checks reject clicks when the bar is
-  // hidden, filtered, covered, or moved away from where the user last put it.
+  // hidden, filtered, covered, or moved away from the top center.
   // ALWAYS toast on rejection: a silent guard once hid a real bug where
   // example.com's `div{opacity:.8}` disabled both buttons on every page.
   // Tolerance is relative because `html{zoom}` scales getBoundingClientRect.
@@ -592,18 +555,11 @@ export function initPlaywriterToolbar(): void {
       Number(style.opacity) < 0.9 ||
       style.filter !== 'none' ||
       style.backdropFilter !== 'none'
-    const resolvePosition = (value: string, viewportSize: number): number => {
-      return value.endsWith('%') ? (parseFloat(value) / 100) * viewportSize : parseFloat(value)
-    }
-    const tolerance = (expected: number): number => {
-      return Math.max(2, Math.abs(expected) * 0.25)
-    }
     const rect = host.getBoundingClientRect()
-    const expectedCenterX = resolvePosition(intendedLeft, window.innerWidth)
-    const expectedTop = resolvePosition(intendedTop, window.innerHeight)
+    const expectedCenterX = window.innerWidth / 2
     const moved =
-      Math.abs(rect.left + rect.width / 2 - expectedCenterX) >= tolerance(expectedCenterX) ||
-      Math.abs(rect.top - expectedTop) >= tolerance(expectedTop)
+      Math.abs(rect.left + rect.width / 2 - expectedCenterX) >= Math.max(2, expectedCenterX * 0.25) ||
+      Math.abs(rect.top) >= 2
     if (restyled || moved || document.elementFromPoint(e.clientX, e.clientY) !== host) {
       showToast('Blocked: this page is restyling the Playwriter toolbar')
       return false
@@ -810,9 +766,6 @@ export function initPlaywriterToolbar(): void {
 
   // Lucide x icon
   const CLOSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`
-
-  // 6-dot grip for dragging (2 columns x 3 rows)
-  const DRAG_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="14" viewBox="0 0 8 14" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1.3"/><circle cx="6" cy="2" r="1.3"/><circle cx="2" cy="7" r="1.3"/><circle cx="6" cy="7" r="1.3"/><circle cx="2" cy="12" r="1.3"/><circle cx="6" cy="12" r="1.3"/></svg>`
 
   // Record circle icon (red filled circle)
   const RECORD_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="#ef4444"/></svg>`
@@ -1278,88 +1231,40 @@ export function initPlaywriterToolbar(): void {
   const sep3 = document.createElement('div')
   sep3.className = 'separator'
 
-  // Close button
+  // ── Collapsed tab <-> expanded toolbar ─────────────────────────────────────
+
+  function setExpanded(expanded: boolean): void {
+    if (!expanded) {
+      setPinMode(false)
+      hideRemotePanels()
+    }
+    stack.classList.toggle('collapsed', !expanded)
+  }
+
+  const tabBtn = document.createElement('button')
+  tabBtn.className = 'tab'
+  tabBtn.setAttribute('data-tooltip', 'Show Playwriter toolbar')
+  tabBtn.setAttribute('aria-label', 'Show Playwriter toolbar')
+  tabBtn.innerHTML = CHEVRON_SVG
+  tabBtn.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation()
+    playSound('click')
+    setExpanded(true)
+  })
+  stack.insertBefore(tabBtn, toolbarEl)
+
   const closeBtn = document.createElement('button')
   closeBtn.className = 'btn'
-  closeBtn.setAttribute('data-tooltip', 'Hide toolbar')
-  closeBtn.setAttribute('aria-label', 'Hide toolbar')
+  closeBtn.setAttribute('data-tooltip', 'Collapse toolbar')
+  closeBtn.setAttribute('aria-label', 'Collapse toolbar')
   closeBtn.innerHTML = CLOSE_SVG
   closeBtn.addEventListener('click', (e: MouseEvent) => {
     e.stopPropagation()
     playSound('click')
-    setPinMode(false)
-    host.style.display = 'none'
+    setExpanded(false)
   })
 
-  // Drag handle
-  const dragHandle = document.createElement('div')
-  dragHandle.className = 'drag-handle'
-  dragHandle.setAttribute('data-tooltip', 'Drag to move')
-  dragHandle.setAttribute('aria-label', 'Drag to move')
-  dragHandle.innerHTML = DRAG_SVG
-
-  // ── Drag behavior ─────────────────────────────────────────────────────────
-
-  let dragOffset = { x: 0, y: 0 }
-
-  function onDragMouseDown(e: MouseEvent): void {
-    e.preventDefault()
-    e.stopPropagation()
-    isDragging = true
-    dragHandle.classList.add('dragging')
-    const hostRect = host.getBoundingClientRect()
-    // Offset from the center of the toolbar (since transform:translateX(-50%))
-    dragOffset.x = e.clientX - (hostRect.left + hostRect.width / 2)
-    dragOffset.y = e.clientY - hostRect.top
-    document.addEventListener('mousemove', onDragMouseMove, true)
-    document.addEventListener('mouseup', onDragMouseUp, true)
-  }
-
-  function onDragMouseMove(e: MouseEvent): void {
-    if (!isDragging) return
-    // Use rounded pixel values during drag to avoid sub-pixel jitter from
-    // percentage + translateX(-50%) rounding on each frame.
-    const leftPx = Math.round(e.clientX - dragOffset.x)
-    const topPx = Math.round(e.clientY - dragOffset.y)
-    const clampedLeft = Math.max(0, Math.min(window.innerWidth, leftPx))
-    const clampedTop = Math.max(0, Math.min(window.innerHeight - 40, topPx))
-    intendedLeft = clampedLeft + 'px'
-    intendedTop = clampedTop + 'px'
-    host.style.left = intendedLeft
-    host.style.top = intendedTop
-  }
-
-  function onDragMouseUp(): void {
-    if (!isDragging) return
-    isDragging = false
-    dragHandle.classList.remove('dragging')
-    document.removeEventListener('mousemove', onDragMouseMove, true)
-    document.removeEventListener('mouseup', onDragMouseUp, true)
-    // Convert final pixel position to viewport percentages for persistence
-    const leftPct = (parseFloat(host.style.left) / window.innerWidth) * 100
-    const topPct = (parseFloat(host.style.top) / window.innerHeight) * 100
-    if (!isNaN(leftPct) && !isNaN(topPct)) {
-      savePosition(leftPct, topPct)
-    }
-  }
-
-  dragHandle.addEventListener('mousedown', onDragMouseDown)
-
-  // ── Render toolbar ──────────────────────────────────────────────────────────
-
-  function renderToolbar(): void {
-    toolbarEl.innerHTML = ''
-    toolbarEl.appendChild(pinBtn)
-    toolbarEl.appendChild(sep1)
-    toolbarEl.appendChild(recordBtn)
-    toolbarEl.appendChild(sep2)
-    toolbarEl.appendChild(remoteBtn)
-    toolbarEl.appendChild(sep3)
-    toolbarEl.appendChild(closeBtn)
-    toolbarEl.appendChild(dragHandle)
-  }
-
-  renderToolbar()
+  toolbarEl.append(pinBtn, sep1, recordBtn, sep2, remoteBtn, sep3, closeBtn)
 
   // Never focusable: agent keyboard input (Tab, Enter, Space) must not reach the
   // toolbar. preventDefault on mousedown stops a user click from focusing a

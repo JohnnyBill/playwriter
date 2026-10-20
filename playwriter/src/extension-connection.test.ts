@@ -306,9 +306,8 @@ describe('Extension Connection Tests', () => {
     }
   }, 60_000)
 
-  // share.html is the only consent surface for Remote control. Start is idempotent,
-  // the icon menu Stop sharing closes the tunnel.
-  it('starts Remote control from share.html and stops it from the icon menu', async () => {
+  // Start is idempotent, the icon menu Stop sharing closes the tunnel.
+  it('starts Remote control twice with one tunnel and stops it from the icon menu', async () => {
     const browserContext = getBrowserContext()
     const serviceWorker = await getExtensionServiceWorker(browserContext)
     const page = await browserContext.newPage()
@@ -318,21 +317,11 @@ describe('Extension Connection Tests', () => {
       const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
       return tab.id!
     })
-    const shareUrl = await serviceWorker.evaluate((id) => {
-      return chrome.runtime.getURL(`src/share.html?tabId=${id}`)
-    }, tabId)
-    const confirmShare = async () => {
-      const sharePage = await browserContext.newPage()
-      await sharePage.goto(shareUrl)
-      await sharePage.getByRole('button', { name: 'Share' }).click()
-      await sharePage.getByText('Copied prompt').waitFor({ timeout: 10_000 })
-      await sharePage.close().catch(() => {})
-    }
 
     try {
-      await confirmShare()
+      await serviceWorker.evaluate(() => globalThis.startRemoteControlForActiveTab())
       const firstShare = await serviceWorker.evaluate(() => globalThis.getRemoteControlState())
-      await confirmShare()
+      await serviceWorker.evaluate(() => globalThis.startRemoteControlForActiveTab())
       const secondShare = await serviceWorker.evaluate(() => globalThis.getRemoteControlState())
       expect({
         anchorIsTab: firstShare?.anchorTabId === tabId,
@@ -467,58 +456,6 @@ describe('Extension Connection Tests', () => {
     }
   }, 120_000)
 
-  it('starts and stops Record skill from the icon menu', async () => {
-    const browserContext = getBrowserContext()
-    const serviceWorker = await getExtensionServiceWorker(browserContext)
-    const page = await browserContext.newPage()
-    await page.goto('https://example.com/?record-menu')
-    await page.bringToFront()
-    const recordingCount = async () => {
-      const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
-      const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
-      return status.recordings.length
-    }
-    try {
-      // The tab is not attached yet: the menu attaches it before recording.
-      await serviceWorker.evaluate(async () => {
-        await globalThis.runMenuItemForActiveTab('playwriter-record')
-      })
-      expect(await recordingCount()).toBe(1)
-      await serviceWorker.evaluate(async () => {
-        await globalThis.runMenuItemForActiveTab('playwriter-record')
-      })
-      expect(await recordingCount()).toBe(0)
-
-      // Menu start, CLI stop, CLI start: menu Stop must stop the new recording,
-      // not send the expired id of the first one.
-      const relayPost = async (route: string) => {
-        await fetch(`http://127.0.0.1:${TEST_PORT}${route}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        })
-      }
-      await serviceWorker.evaluate(async () => {
-        await globalThis.runMenuItemForActiveTab('playwriter-record')
-      })
-      await relayPost('/recorder/stop')
-      await relayPost('/recorder/start')
-      expect(await recordingCount()).toBe(1)
-      await serviceWorker.evaluate(async () => {
-        await globalThis.runMenuItemForActiveTab('playwriter-record')
-      })
-      expect(await recordingCount()).toBe(0)
-    } finally {
-      await serviceWorker.evaluate(async () => {
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-        if (globalThis.getExtensionState().tabs.has(tab.id!)) {
-          await globalThis.toggleExtensionForActiveTab()
-        }
-      })
-      await page.close()
-    }
-  }, 60_000)
-
   // Clicks the real button instead of calling the handler, so the trusted-click guard
   // stays covered. Page CSS like `div{opacity:0.8}` once matched the toolbar host and
   // disabled Record Skill and Remote control on every page.
@@ -533,49 +470,56 @@ describe('Extension Connection Tests', () => {
     })
     const toolbar = page.locator('[data-playwriter-toolbar="1"]').first()
     await toolbar.waitFor()
-    const box = await toolbar.boundingBox()
-    if (!box) {
-      throw new Error('Toolbar is not visible')
+    const tabBox = await toolbar.boundingBox()
+    if (!tabBox) {
+      throw new Error('Toolbar tab is not visible')
+    }
+    const recordingCount = async () => {
+      const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
+      const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
+      return status.recordings.length
+    }
+    const toolbarWidth = async () => {
+      return (await toolbar.boundingBox())?.width || 0
+    }
+    // Record Skill sits right after the labeled Copy Locator button.
+    const clickRecord = async () => {
+      const box = await toolbar.boundingBox()
+      if (!box) {
+        throw new Error('Expanded toolbar is not visible')
+      }
+      await page.mouse.click(box.x + 155, box.y + box.height / 2)
     }
 
-    // The toolbar is icon-only until hovered, then labels expand over 200ms.
-    // Hover first and click in the expanded layout, where Record Skill sits
-    // right after the labeled Copy Locator button.
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-    let lastWidth = 0
-    await expect
-      .poll(async () => {
-        const width = (await toolbar.boundingBox())?.width || 0
-        const settled = width > box.width && width === lastWidth
-        lastWidth = width
-        return settled
-      })
-      .toBe(true)
-    const expandedBox = await toolbar.boundingBox()
-    if (!expandedBox) {
-      throw new Error('Expanded toolbar is not visible')
-    }
-    await page.mouse.click(expandedBox.x + 155, expandedBox.y + expandedBox.height / 2)
-    await expect
-      .poll(async () => {
-        const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
-        const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
-        return status.recordings.length
-      })
-      .toBe(1)
+    // The toolbar starts as a small tab at the top edge. Click it to expand.
+    await page.mouse.click(tabBox.x + tabBox.width / 2, tabBox.y + tabBox.height / 2)
+    await expect.poll(toolbarWidth).toBeGreaterThan(tabBox.width)
+    const idleWidth = await toolbarWidth()
 
-    const activeBox = await toolbar.boundingBox()
-    if (!activeBox) {
-      throw new Error('Active toolbar is not visible')
-    }
-    await page.mouse.click(activeBox.x + 155, activeBox.y + activeBox.height / 2)
-    await expect
-      .poll(async () => {
-        const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
-        const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
-        return status.recordings.length
+    await clickRecord()
+    await expect.poll(recordingCount).toBe(1)
+    await clickRecord()
+    await expect.poll(recordingCount).toBe(0)
+
+    // Toolbar start, CLI stop, CLI start: toolbar Stop must stop the new recording,
+    // not send the expired id of the first one.
+    const relayPost = async (route: string) => {
+      await fetch(`http://127.0.0.1:${TEST_PORT}${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
       })
-      .toBe(0)
+    }
+    await expect.poll(toolbarWidth).toBe(idleWidth)
+    await clickRecord()
+    await expect.poll(recordingCount).toBe(1)
+    await relayPost('/recorder/stop')
+    await expect.poll(toolbarWidth).toBe(idleWidth)
+    await relayPost('/recorder/start')
+    // Wait for the toolbar to show "Stop recording…" before clicking it.
+    await expect.poll(toolbarWidth).not.toBe(idleWidth)
+    await clickRecord()
+    await expect.poll(recordingCount).toBe(0)
     await page.close()
   }, 120000)
 
@@ -621,9 +565,9 @@ describe('Extension Connection Tests', () => {
         throw new Error('Agent page not found')
       }
 
+      // Clicks land on the button under the collapsed tab, so the tab must not expand.
       await agentPage.locator('#under-toolbar').click({ timeout: 5000 })
-      // x: 52 is the Record Skill icon in the collapsed, icon-only toolbar.
-      await agentPage.locator('#under-toolbar').click({ position: { x: 52, y: box.height / 2 }, timeout: 5000 })
+      await agentPage.locator('#under-toolbar').click({ position: { x: 4, y: box.height / 2 }, timeout: 5000 })
       const focusedToolbar: boolean[] = []
       for (let i = 0; i < 4; i++) {
         await agentPage.keyboard.press('Tab')
@@ -642,10 +586,12 @@ describe('Extension Connection Tests', () => {
         }),
         recordings: recorderStatus.recordings.length,
         focusedToolbar: focusedToolbar.includes(true),
+        stillCollapsed: (await toolbar.boundingBox())?.width === box.width,
       }).toMatchInlineSnapshot(`
         {
           "focusedToolbar": false,
           "recordings": 0,
+          "stillCollapsed": true,
           "underClicks": 2,
         }
       `)
