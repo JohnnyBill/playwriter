@@ -299,9 +299,9 @@ let autoAttachParams: Protocol.Target.SetAutoAttachRequest | null = null
 // its session tab group). Only whole-profile cookie/cache commands are denied.
 //
 // Lifecycle:
-// - Share starts from the icon menu (confirmed in share.html): that tab is the
-//   anchor tab, attached first if needed.
-// - Stop sharing (icon menu), closing or disconnecting the anchor tab, or
+// - Share starts from the in-page toolbar (confirmed in its dialog): that tab is
+//   the anchor tab.
+// - Stop sharing (toolbar or menus), closing or disconnecting the anchor tab, or
 //   cancelling Chrome's debugger infobar closes the tunnel and every tunneled
 //   connection immediately.
 // - On stop, tabs attached because of the remote (created by it, or opened as
@@ -486,7 +486,6 @@ class ConnectionManager {
           // Recordings live in the relay, so they end with it.
           recorderActive = false
           skillRecordingId = null
-          updateActionMenu()
           setRecorderStateInAllTabs(false)
           this.handleClose(event.reason, event.code)
         }
@@ -854,13 +853,12 @@ async function dispatchRelayMessage(message: any, sink: RelayMessageSink): Promi
     return
   }
 
-  // Relay notifies us when action recording starts/stops: update the icon menu and toolbars.
+  // Relay notifies us when action recording starts/stops: update the toolbars.
   if (message.method === 'setRecorderState') {
     recorderActive = !!(message.params as { recording?: boolean })?.recording
     if (!recorderActive) {
       skillRecordingId = null
     }
-    updateActionMenu()
     setRecorderStateInAllTabs(recorderActive)
     return
   }
@@ -2609,7 +2607,7 @@ async function startRemoteControl(
 
   tunnel.start()
   persistRemoteTunnel()
-  updateActionMenu()
+  updateSharingMenus()
   setRemoteStateInAllTabs(true)
   logger.log('Remote control started, anchor tab', anchorTabId)
   return { url: tunnel.url, started: true, id: tunnelId }
@@ -2625,7 +2623,7 @@ function stopRemoteControl(): boolean {
   }
   setRemoteStateInAllTabs(false)
   remoteTunnel = null
-  updateActionMenu()
+  updateSharingMenus()
   runtime.tunnel.close()
   persistRemoteTunnel()
   for (const tabId of runtime.remoteTabIds) {
@@ -2960,21 +2958,20 @@ void resetDebugger().then(() => {
 void connectionManager.maintainLoop()
 
 // ============================================================================
-// Menus. Same actions as the in-page toolbar (toolbar/toolbar.ts), but on any tab:
+// Menus. Record skill and Share browser start only from the in-page toolbar
+// (toolbar/toolbar.ts); the menus add element actions and sharing shortcuts:
 //
 //   page right-click (Playwriter submenu)
 //   ├─ Copy Playwriter Locator for this element
 //   ├─ Copy React Component Source Path (file:line)   (only on connected tabs)
-//   ├─ ───────────
-//   │                                     icon right-click (contexts: ['action'])
-//   ├─ Record skill: … / Stop recording … ──> same items
-//   ├─ Share browser with a remote agent…  (opens share.html)
-//   ├─ Copy remote agent prompt …  ┐
-//   ├─ Copy remote id …            ├ only while sharing
+//   ├─ ───────────                 ┐
+//   │                              │   icon right-click (contexts: ['action'])
+//   ├─ Copy remote agent prompt …  │ only while sharing ──> same items
+//   ├─ Copy remote id …            │
 //   └─ Stop sharing …              ┘
 //
 // Sounds play in the offscreen document (service workers have no Web Audio):
-// `record` when recording starts, `success` after every clipboard copy.
+// `success` after every clipboard copy.
 //
 // The action menu allows at most 6 top-level items
 // (chrome.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT).
@@ -2986,8 +2983,6 @@ const MENU = {
   pinElement: 'playwriter-pin-element',
   copyReactSource: 'playwriter-copy-react-source',
   separator: 'playwriter-separator',
-  record: 'playwriter-record',
-  share: 'playwriter-share',
   copyRemotePrompt: 'playwriter-copy-remote-prompt',
   copyRemoteId: 'playwriter-copy-remote-id',
   stopSharing: 'playwriter-stop-sharing',
@@ -3003,12 +2998,6 @@ const PAGE_MENU_CONTEXTS: chrome.contextMenus.CreateProperties['contexts'] = [
   'video',
   'audio',
 ]
-
-const RECORD_TITLES = {
-  idle: 'Record skill: record your clicks and typing for an agent',
-  starting: 'Starting recorder…',
-  recording: 'Stop recording and copy the agent prompt',
-} as const
 
 // Icon menu items also show on page right-click, so they are easier to find.
 const SHARED_MENU_CONTEXTS: chrome.contextMenus.CreateProperties['contexts'] = ['action', ...PAGE_MENU_CONTEXTS]
@@ -3028,12 +3017,11 @@ const menusReady: Promise<void> = chrome.contextMenus.removeAll().then(() => {
     visible: false,
   })
   // Page-only separator, so it does not count toward the action menu limit.
-  chrome.contextMenus.create({ id: MENU.separator, type: 'separator', contexts: PAGE_MENU_CONTEXTS })
-  chrome.contextMenus.create({ id: MENU.record, title: RECORD_TITLES.idle, contexts: SHARED_MENU_CONTEXTS })
   chrome.contextMenus.create({
-    id: MENU.share,
-    title: 'Share browser with a remote agent…',
-    contexts: SHARED_MENU_CONTEXTS,
+    id: MENU.separator,
+    type: 'separator',
+    contexts: PAGE_MENU_CONTEXTS,
+    visible: false,
   })
   chrome.contextMenus.create({
     id: MENU.copyRemotePrompt,
@@ -3075,22 +3063,16 @@ function updateContextMenuVisibility(): void {
   updateMenus([[MENU.copyReactSource, { visible: isConnected }]])
 }
 
-function updateActionMenu(): void {
+function updateSharingMenus(): void {
   const sharing = remoteTunnel !== null
-  const recordTitle = recorderActive
-    ? RECORD_TITLES.recording
-    : skillRecordingStartInFlight
-      ? RECORD_TITLES.starting
-      : RECORD_TITLES.idle
   updateMenus([
-    [MENU.record, { title: recordTitle, enabled: !skillRecordingStartInFlight }],
-    [MENU.share, { visible: !sharing }],
+    [MENU.separator, { visible: sharing }],
     [MENU.copyRemotePrompt, { visible: sharing }],
     [MENU.copyRemoteId, { visible: sharing }],
     [MENU.stopSharing, { visible: sharing }],
   ])
 }
-updateActionMenu()
+updateSharingMenus()
 
 // Toast in the tab's isolated world: the toolbar toast on attached tabs, else the
 // content-script.ts toast. Best-effort: restricted pages (chrome://, Web Store)
@@ -3215,41 +3197,17 @@ async function copyElementLocator(options: { info: chrome.contextMenus.OnClickDa
   await toastTab(tabId, 'Copied locator')
 }
 
-async function toggleRecordingFromMenu(tab: chrome.tabs.Tab): Promise<void> {
-  if (!tab.id || skillRecordingStartInFlight) {
+// Started from the toolbar, which only shows on attached tabs. The toolbar plays its own sound.
+async function startSkillRecording(tabId: number): Promise<void> {
+  if (skillRecordingStartInFlight) {
     return
   }
   if (recorderActive) {
-    await stopSkillRecording(tab.id)
+    setRecorderStateInAllTabs(true)
     return
   }
-  if (await startSkillRecording(tab)) {
-    playSound('record')
-    await toastTab(tab.id, 'Recording')
-  }
-}
-
-// Shared by the menu and the toolbar. The toolbar plays its own start sound.
-async function startSkillRecording(tab: chrome.tabs.Tab): Promise<boolean> {
-  if (!tab.id || skillRecordingStartInFlight) {
-    return false
-  }
-  const tabId = tab.id
-  if (recorderActive || isRestrictedUrl(tab.url)) {
-    setRecorderStateInAllTabs(recorderActive)
-    return false
-  }
   skillRecordingStartInFlight = true
-  updateActionMenu()
   try {
-    // The recorder records attached tabs, so attach this one first.
-    if (store.getState().tabs.get(tabId)?.state !== 'connected') {
-      await connectTab(tabId)
-    }
-    if (store.getState().tabs.get(tabId)?.state !== 'connected') {
-      await toastTab(tabId, 'Start playwriter first')
-      return false
-    }
     const response = await fetch(`http://${RELAY_HOST}:${RELAY_PORT}/recorder/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3261,18 +3219,15 @@ async function startSkillRecording(tab: chrome.tabs.Tab): Promise<boolean> {
     if (!response.ok || !result.recordingId) {
       logger.error('Action recorder start failed:', result.error || response.status)
       await toastTab(tabId, result.error || 'Failed to start recording')
-      return false
+      return
     }
     skillRecordingId = result.recordingId
     recorderActive = true
-    return true
   } catch (error) {
     logger.error('Action recorder start failed:', error)
     await toastTab(tabId, 'Failed to start recording')
-    return false
   } finally {
     skillRecordingStartInFlight = false
-    updateActionMenu()
     setRecorderStateInAllTabs(recorderActive)
   }
 }
@@ -3292,7 +3247,6 @@ async function stopSkillRecording(tabId: number): Promise<void> {
     }
     skillRecordingId = null
     recorderActive = false
-    updateActionMenu()
     setRecorderStateInAllTabs(false)
     const prompt = dedent`
       I just recorded a browser workflow (recording ${result.recordingId}).
@@ -3315,19 +3269,6 @@ async function stopSkillRecording(tabId: number): Promise<void> {
     logger.error('Action recorder stop failed:', error)
     await toastTab(tabId, 'Failed to stop recording')
   }
-}
-
-// Remote control needs explicit consent, so it opens an extension page instead of
-// starting from the menu click. share.ts sends 'remoteControlStart' with this tab.
-async function openShareWindow(tab: chrome.tabs.Tab): Promise<void> {
-  if (!tab.id) {
-    return
-  }
-  if (isRestrictedUrl(tab.url)) {
-    return
-  }
-  const url = chrome.runtime.getURL(`src/share.html?tabId=${tab.id}`)
-  await chrome.windows.create({ url, type: 'popup', width: 420, height: 260, focused: true })
 }
 
 async function copyRemoteText(options: { tabId: number; kind: 'prompt' | 'id' }): Promise<void> {
@@ -3721,10 +3662,6 @@ async function runMenuAction(info: chrome.contextMenus.OnClickData, tab: chrome.
         return await copyElementLocator({ info, tab })
       case MENU.copyReactSource:
         return await copyReactSource({ info, tab })
-      case MENU.record:
-        return await toggleRecordingFromMenu(tab)
-      case MENU.share:
-        return await openShareWindow(tab)
       case MENU.copyRemotePrompt:
         return await copyRemoteText({ tabId, kind: 'prompt' })
       case MENU.copyRemoteId:
@@ -3935,19 +3872,12 @@ function playSound(sound: SoundName): void {
     })
 }
 
-// Handle messages from share.html (Remote control) and the in-page toolbar
+// Handle messages from the in-page toolbar
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Sent by share.html with a tabId, or by the toolbar after its in-page confirm dialog.
+  // Sent by the toolbar after its in-page confirm dialog.
   if (message.action === 'remoteControlStart') {
-    const fromSharePage =
-      sender.id === chrome.runtime.id && Boolean(sender.url?.startsWith(chrome.runtime.getURL('src/share.html')))
-    const toolbarTabId = fromSharePage ? null : getToolbarSenderTabId(sender)
-    if (!fromSharePage && !toolbarTabId) {
-      return false
-    }
-    const tabId = fromSharePage ? message.tabId : toolbarTabId
-    if (typeof tabId !== 'number') {
-      sendResponse({ success: false, error: 'Missing tab' })
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId) {
       return false
     }
     void (async () => {
@@ -3962,20 +3892,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })().then(
       () => {
-        if (toolbarTabId) {
-          void toastTab(toolbarTabId, 'Copied prompt')
-        }
-        sendResponse({ success: true })
+        void toastTab(tabId, 'Copied prompt')
       },
       (error: Error) => {
         logger.error('Remote control start failed:', error)
-        if (toolbarTabId) {
-          void toastTab(toolbarTabId, `Remote control failed: ${error.message}`)
-        }
-        sendResponse({ success: false, error: error.message })
+        void toastTab(tabId, `Remote control failed: ${error.message}`)
       },
     )
-    return true
+    return false
   }
 
   if (message.action === 'remoteControlStop') {
@@ -4000,10 +3924,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'actionRecorderStart') {
     const tabId = getToolbarSenderTabId(sender)
-    if (!tabId || !sender.tab) {
+    if (!tabId) {
       return false
     }
-    void startSkillRecording(sender.tab)
+    void startSkillRecording(tabId)
     return false
   }
 

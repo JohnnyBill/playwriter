@@ -76,26 +76,6 @@ const SOUND_RECIPES: Record<SoundName, SoundRecipe> = {
     ],
     shimmer: { delay: 0.1, feedback: 0.22, wet: 0.16, lowpass: 4500 },
   },
-  // Lock-on sweep that resolves, played when recording starts.
-  record: {
-    masterGain: 0.48,
-    layers: [
-      { kind: 'noise', filterType: 'bandpass', filterFreq: 3600, filterQ: 1.8, attack: 0.001, decay: 0.02, peak: 0.11 },
-      {
-        kind: 'tone',
-        waveform: 'triangle',
-        frequency: 330,
-        glideTo: 660,
-        glideTime: 0.12,
-        offset: 0.012,
-        attack: 0.004,
-        decay: 0.16,
-        peak: 0.055,
-      },
-      { kind: 'tone', waveform: 'sine', frequency: 990, offset: 0.13, attack: 0.004, decay: 0.22, peak: 0.06 },
-    ],
-    shimmer: { delay: 0.1, feedback: 0.16, wet: 0.1, lowpass: 4200 },
-  },
 }
 
 let audioContext: AudioContext | null = null

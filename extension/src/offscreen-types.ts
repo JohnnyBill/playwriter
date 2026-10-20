@@ -8,7 +8,7 @@ export interface OffscreenCopyTextMessage {
   text: string
 }
 
-export type SoundName = 'success' | 'record'
+export type SoundName = 'success'
 
 export interface OffscreenPlaySoundMessage {
   action: 'playSound'
