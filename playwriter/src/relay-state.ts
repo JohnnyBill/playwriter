@@ -26,6 +26,8 @@ import { INVENTORY_READY_CAPABILITY, type TabGroupColor } from './protocol.js'
 export type ExtensionSocket = {
   send(data: string | ArrayBuffer | Uint8Array): void
   close(code?: number, reason?: string): void
+  /** WebSocket protocol ping frame. Only remote-control dials have it. */
+  ping?(): void
 }
 
 export type ConnectedTarget = {

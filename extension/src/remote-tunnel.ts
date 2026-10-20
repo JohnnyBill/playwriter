@@ -39,8 +39,12 @@ export type RemoteTunnelOptions = {
   onStatusChange(status: TunnelStatus, detail?: string): void
 }
 
-/** Keepalive interval — Cloudflare kills idle WebSockets after ~100s. */
-const PING_INTERVAL_MS = 30_000
+/**
+ * Keepalive interval. Under 30s so the MV3 service worker idle timer never
+ * fires: relay pings are answered at the edge and never reach us, so this ping
+ * (auto-answered by the Durable Object without waking it) is the only keepalive.
+ */
+const PING_INTERVAL_MS = 20_000
 const RECONNECT_DELAY_MS = 3_000
 // 4409 = tunnel id already has a connected upstream. After an unclean service
 // worker death the DO still sees the dead socket as connected until Cloudflare
@@ -173,7 +177,7 @@ export class RemoteTunnel {
   private startPing(): void {
     this.stopPing()
     this.pingInterval = setInterval(() => {
-      this.send({ type: 'ping' })
+      this.send({ method: 'ping' })
     }, PING_INTERVAL_MS)
   }
 

@@ -219,8 +219,18 @@ export async function startPlayWriterCDPRelayServer({
     }
 
     const pingInterval = setInterval(() => {
-      const latestExt = store.getState().extensions.get(extensionId)
-      latestExt?.ws?.send(JSON.stringify({ method: 'ping' }))
+      const ws = store.getState().extensions.get(extensionId)?.ws
+      if (!ws) {
+        return
+      }
+      // Remote tunnels: Cloudflare answers protocol pings without waking the
+      // Durable Object. A JSON ping every 5s kept every tunnel DO awake 24/7.
+      if (ws.ping) {
+        ws.ping()
+        return
+      }
+      // Local: the extension service worker needs a real message to stay alive.
+      ws.send(JSON.stringify({ method: 'ping' }))
     }, 5000)
 
     store.setState((s) => relayState.updateExtensionIO(s, { extensionId, pingInterval }))
@@ -2026,6 +2036,11 @@ export async function startPlayWriterCDPRelayServer({
       },
       close(code, reason) {
         socket.close(code ?? 1000, reason)
+      },
+      ping() {
+        if (socket.readyState === NodeWebSocket.OPEN) {
+          socket.ping()
+        }
       },
     }
     let opened = false

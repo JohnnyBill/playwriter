@@ -86,7 +86,8 @@ export type TraforoDownstreamMessage =
   | { type: 'ws_frame'; connId: string; data: string; binary: boolean }
   | { type: 'ws_closed'; connId: string; code: number; reason: string }
   | { type: 'ws_error'; connId: string; error: string }
-  | { type: 'ping' }
+  /** Same string as the relay JSON ping, so one DO auto-response answers both. */
+  | { method: 'ping' }
 
 // ---------------------------------------------------------------------------
 // URL helpers

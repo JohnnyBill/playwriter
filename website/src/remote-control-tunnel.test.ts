@@ -137,6 +137,34 @@ describe('remote control tunnel', () => {
     upstream.close(1000, 'done')
   })
 
+  // Keepalives must be auto-answered: relaying them wakes the DO and keeps it
+  // billed 24/7 (old relays ping every 5s).
+  test('answers keepalive pings without relaying them', async () => {
+    const tunnelId = crypto.randomUUID()
+    const upstream = await openRoutedTunnelSocket({ tunnelId, path: '/traforo-upstream' })
+    await waitForMessage(upstream)
+    const openMessagePromise = waitForMessage(upstream)
+    const downstream = await openRoutedTunnelSocket({ tunnelId, path: '/extension' })
+    const openMessage = JSON.parse(await openMessagePromise) as { connId: string }
+    upstream.send(JSON.stringify({ type: 'ws_opened', connId: openMessage.connId }))
+
+    const upstreamMessages: string[] = []
+    upstream.addEventListener('message', (event) => {
+      upstreamMessages.push(String(event.data))
+    })
+
+    const downstreamPong = waitForMessage(downstream)
+    downstream.send('{"method":"ping"}')
+    expect(await downstreamPong).toBe('{"method":"pong"}')
+
+    const upstreamPong = waitForMessage(upstream)
+    upstream.send('{"method":"ping"}')
+    expect(await upstreamPong).toBe('{"method":"pong"}')
+    expect(upstreamMessages).toEqual(['{"method":"pong"}'])
+
+    upstream.close(1000, 'done')
+  })
+
   // Path-based tunneling keeps the id out of DNS/SNI: the same playwriter.dev
   // worker serves /tunnel/{id}/upstream and /tunnel/{id}/extension.
   test('routes path-based tunnel urls on the main domain', async () => {

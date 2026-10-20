@@ -81,8 +81,13 @@ export class RemoteControlTunnel extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
+    // Keepalives must never reach webSocketMessage: one message every <10s keeps
+    // the DO awake 24/7 (billed duration). New relays send protocol ping frames,
+    // which Cloudflare answers without waking the DO. Older relays send this JSON
+    // ping every 5s, and new extensions send the same string (browsers cannot
+    // send protocol pings), so one pair answers both. Relays ignore the pong.
     this.ctx.setWebSocketAutoResponse(
-      new WebSocketRequestResponsePair('{"type":"ping"}', '{"type":"pong"}'),
+      new WebSocketRequestResponsePair('{"method":"ping"}', '{"method":"pong"}'),
     )
   }
 
