@@ -1215,7 +1215,7 @@ state.recordingResult = await recording.stop({ page: state.page }) // { path, du
 // Other: recording.isRecording({ page: state.page }), recording.cancel({ page: state.page })
 ```
 
-**ghostCursor.show / ghostCursor.hide** - the ghost cursor overlay is always on: the extension injects it on every Playwriter-attached tab and it stays visible at the last spot Playwright clicked or moved. These methods only matter if you want to change the cursor style or temporarily hide it:
+**ghostCursor.show / ghostCursor.hide** - the ghost cursor overlay is always on: the extension injects it hidden on every Playwriter-attached tab, it appears on the first Playwright mouse action (click, move, wheel) and fades out after 5s idle. These methods only matter if you want to change the cursor style or temporarily hide it:
 
 ```js
 await ghostCursor.show({ page: state.page, style: 'screenstudio' }) // 'minimal' (default), 'dot', 'screenstudio'

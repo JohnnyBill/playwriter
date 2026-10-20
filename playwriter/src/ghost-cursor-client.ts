@@ -1,6 +1,6 @@
 /**
  * Browser-side ghost cursor renderer, injected into every Playwriter-attached tab.
- * Auto-enables on load (top frame only). Idles out after 5s of no activity.
+ * Top frame only. Hidden until the first mouse action, idles out after 5s of no activity.
  *
  * Two-element DOM structure so move and press have independent CSS transitions:
  *   outer (#__playwriter_ghost_cursor__) → translate3d, move easing/duration
@@ -111,8 +111,9 @@ const runtime: GhostCursorRuntimeState = {
   y: 0,
   scale: 1,
   hasPosition: false,
-  enabled: false,
-  idleHidden: false,
+  // Starts enabled but hidden: the element is created on the first mouse action.
+  enabled: true,
+  idleHidden: true,
 }
 
 let idleHideTimer: ReturnType<typeof setTimeout> | null = null
@@ -216,6 +217,10 @@ function computeDurationMs(options: { targetX: number; targetY: number }): numbe
   const dx = options.targetX - runtime.x
   const dy = options.targetY - runtime.y
   const distance = Math.hypot(dx, dy)
+  // Zero distance means a teleport (wake from hidden), so jump instead of sliding from the old spot.
+  if (distance === 0) {
+    return 0
+  }
   const rawDurationMs = distance / runtime.options.speedPxPerMs
 
   return clamp({
@@ -474,29 +479,6 @@ const api: GhostCursorApi = {
 
 if (isTopFrame) {
   globalThis.__playwriterGhostCursor = api
-
-  // Auto-enable. Defer for early injection (addScriptToEvaluateOnNewDocument)
-  // when DOM isn't ready yet. After hard navigations the cursor re-centers
-  // until the next mouse action arrives.
-  try {
-    if (document.readyState === 'loading') {
-      document.addEventListener(
-        'DOMContentLoaded',
-        () => {
-          try {
-            api.enable()
-          } catch {
-            // Non-fatal — DOM may be in an unexpected state.
-          }
-        },
-        { once: true },
-      )
-    } else {
-      api.enable()
-    }
-  } catch {
-    // Restricted contexts (chrome://, devtools://) — silently skip.
-  }
 }
 
 export {}
