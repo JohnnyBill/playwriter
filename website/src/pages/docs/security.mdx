@@ -84,7 +84,7 @@ playwriter session new
 
 ## Recorder start and stop
 
-The icon menu **Record skill** item runs in the **service worker**, never in the page. The service worker calls `POST /recorder/start`.
+The toolbar **Record Skill** button only sends a `chrome.runtime` message. The **service worker** calls `POST /recorder/start`, never the page. The toolbar lives in an isolated world and checks that the click is trusted.
 
 CORS on those routes allows only the Playwriter **extension origin**. A website cannot pass the preflight, so it cannot start or stop a recording.
 

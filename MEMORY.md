@@ -248,10 +248,13 @@ The in-page toolbar was removed for menus, then restored next to them. Page CSS
 can restyle or cover it, so it lives in the ISOLATED world in a closed shadow
 root, checks clicks with `isTrustedToolbarClick`, and talks to the service
 worker only via `chrome.runtime.sendMessage` (a `window.postMessage` bridge once
-let any page start recording or remote control). Menus (page right-click, icon
-right-click) offer the same actions on any tab; menu Remote control consent
-lives in `share.html`. The isolated content script only remembers the last
-right-clicked element and draws toasts; never expose it to the MAIN world.
+let any page start recording or remote control). The Record skill and Share
+browser… menu items and `share.html` were removed (Oct 2026): recording and
+sharing start only from the toolbar (Remote control consent is an in-page
+dialog). Menus (page right-click, icon right-click) keep Copy Locator, React
+source, and, while sharing, Copy remote agent prompt, Copy remote id and Stop
+sharing. The isolated content script only remembers the last right-clicked
+element and draws toasts; never expose it to the MAIN world.
 
 ## Offscreen document must filter chrome.runtime messages (Apr 2026)
 

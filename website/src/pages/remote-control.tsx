@@ -84,8 +84,8 @@ export default function RemoteControlPage() {
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4">
           <h1 className="text-2xl font-semibold text-white">Remote Control</h1>
           <p className="max-w-md text-center text-sm text-white/50">
-            This page needs a share link. Ask the person sharing their tab to right-click the Playwriter icon, click{' '}
-            <strong className="text-white/70">Share browser…</strong>, and send you the link they get.
+            This page needs a share link. Ask the person sharing their tab to open the Playwriter toolbar on their tab, click{' '}
+            <strong className="text-white/70">Remote control</strong>, and send you the link they get.
           </p>
           <p className="text-xs text-white/30">
             Links look like <code className="rounded bg-white/5 px-1.5 py-0.5">playwriter.dev/remote-control#your-id</code>
