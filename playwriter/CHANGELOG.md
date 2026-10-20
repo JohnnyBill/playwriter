@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.9.0
+
+1. **Screen recording and streaming without an extension click**: `recording.*` and `stream.*` now use CDP screencast piped to `ffmpeg` instead of `chrome.tabCapture`. No user click and no special Chrome flags. Recording now also works in direct CDP mode, headless, cloud browsers and Remote control, and survives cross-site navigation.
+
+   ```js
+   await recording.start({ page: state.page, outputPath: './demo.mp4', audio: true })
+   await state.page.click('a')
+   const { path, duration, size } = await recording.stop({ page: state.page })
+   ```
+
+   - **`ffmpeg` on PATH is required.** `.mp4`, `.mov`, `.mkv` use H.264 (hardware encoder when available) + AAC. `.webm` uses VP8 + Opus.
+   - **Page audio** with `audio: true` taps `<audio>`, `<video>` and AudioContext output. Default off for recordings, on for streams. Cross-origin iframe audio is not captured.
+   - New options `maxSize` (longest edge, default 1920) and `quality` (JPEG, default 90).
+   - **Breaking:** `videoBitsPerSecond` and `audioBitsPerSecond` are removed. The library exports `stopRecording`, `isRecording` and `cancelRecording` are replaced by `startRecording({ page, outputPath })`, which returns a recording with `stop()` and `cancel()`. The relay `/recording/*` and `/stream/*` endpoints are removed.
+   - `stream.stop()` returns `{ duration, frames }`. Streams end when the page closes or the session is reset.
+   - The skill recorder and a video recording on the same tab no longer stop each other.
+   - The extension no longer asks for the `tabCapture` permission.
+
+2. **Skill recordings explain why a step failed**:
+
+   - **Toasts and alerts**: new `toast` events hold the text of `role=alert`, `role=status` and `aria-live` regions. A click that sent no request because the site refused it on the client (limits, validation) now shows the reason.
+   - **Same-origin GETs** (quota checks, job polling) are recorded. Cross-origin GETs are still skipped.
+   - **Compressed response bodies**: gzip and brotli JSON responses are stored instead of `responseBodyOmitted: "encoded"`.
+   - **`afterAction`**: `network` and `toast` events carry the id of the action that happened up to 3s before them.
+   - **Auto-stop at 500 MB**: recordings stop when frames and events grow past 500 MB. The `recording-stopped` event has `reason: "max-size"` and the total `bytes`.
+
+   New CLI options to read recordings faster:
+
+   ```bash
+   playwriter recorder events --errors                          # failed requests, console and page errors, toasts
+   playwriter recorder events --exclude 'analytics|telemetry'   # drop noisy network URLs
+   playwriter recorder frame 42 --offset 1500                   # screencast frame 1.5s after event 42
+   ```
+
+   The thin timeline merges runs of identical requests into one event with `repeat` and `lastId`.
+
+3. **Chrome menus and a smaller in-page toolbar**: right-click a page or the extension icon to find Playwriter actions.
+
+   ```
+   page right-click > Playwriter         extension icon right-click
+   ├─ Copy Playwriter Locator for this element
+   ├─ ───────────                ┐
+   ├─ Copy remote agent prompt   │ only while sharing ──> same items
+   ├─ Copy remote id             │
+   └─ Stop sharing               ┘
+   ```
+
+   - **Copy Playwriter Locator** works on any tab, even before you enable Playwriter on it. It pins the right-clicked element (also inside open shadow roots), copies the `playwriter -e 'inspectPinnedElement(...)'` command and attaches the tab.
+   - Short toasts like `Copied locator` and a short sound confirm every copy.
+   - The in-page toolbar now starts as a small tab at the top center of the page. Click it to open the full toolbar with labels; `×` collapses it again. No hover expansion or dragging. Agent clicks still pass through it.
+   - **Record Skill** and **Remote control** start from the toolbar. Toolbar and menus share one Remote control state, so you can start sharing from the toolbar and stop it from the menu.
+
+4. **Breaking: `connectViaExtension()` keeps tabs open on `close()` by default**: each SDK script closes the tabs it opens, so a later process or another script sharing the tab can keep using it.
+
+   ```ts
+   await using connection = await connectViaExtension({ tabGroup: 'docs' })
+   await using page = await connection.browser.contexts()[0].newPage() // closes its tab at scope end
+   await page.goto('https://example.com')
+   ```
+
+   Pass `closeTabsOnEnd: true` for the old behavior: `close()` also closes every tab the connection opened, plus popups they opened.
+
+5. **Ghost cursor stays hidden until the agent uses the mouse**: it now appears on the first click, move or scroll, then fades out after 5 seconds idle.
+
+6. **Remote control tunnels no longer stay awake while idle**: relays send WebSocket protocol pings that Cloudflare answers at the edge, instead of a JSON ping every 5 seconds. Dials to a browser that stopped sharing fail at once and back off from 1s up to 60s; after 10 minutes offline the relay stops dialing, and the next `execute` on that session dials again. A failed `playwriter session new --remote <id>` no longer leaves a dial running.
+
+7. **Fixed the page closing when another extension injects an iframe**: password managers like 1Password inject a `chrome-extension://` iframe on focus, and Chrome then detaches the debugger from the whole tab. The extension now removes those iframes, reattaches with the same session and restores init scripts, exposed functions, viewport and emulation, so the same `page` keeps working. Chromium treats this detach as intended: https://issues.chromium.org/issues/498987209
+
+8. **Fixed new tabs missing from `context.pages()`** when Chrome creates them inside a Playwriter group without a later group-change event. Child tabs are now controllable without another extension click.
+
+9. **Fixed `Function "__pw_recorderRecordAction" is not exposed` page errors** when several sessions or CDP clients share a tab. Only the client that exposed a function now answers its calls (via `@xmorse/playwright-core@1.59.14`).
+
+10. **Better welcome page**: the agent install prompt now ends with the agent telling you what Playwriter can do (your own Chrome with logins, working together in one browser, full Playwright API, Record skill, Remote control). CLI examples fit on one line.
+
+11. **Skill tells agents to pass a short `--tab-group` name** like `docs` or `shop` instead of using the default `playwriter` group.
+
 ## 0.8.0
 
 1. **Remote control shares the browser, not one tab** — a remote agent connected with `playwriter session new --remote <id>` now gets the same access as a local agent. It sees and drives every tab where Playwriter is enabled, and opens new background tabs with `context.newPage()` in the session's `remote` tab group. `context.pages()[0]` is still the tab where sharing started.

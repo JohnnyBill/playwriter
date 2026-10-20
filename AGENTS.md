@@ -103,6 +103,14 @@ Playwriter UI lives in two places: the in-page toolbar on attached tabs (`extens
 
 ## github releases
 
+before publishing `playwriter`, check if the playwright fork has unreleased changes. if it does, publish `@xmorse/playwright-core` first (see the fork section below):
+
+```bash
+cd playwright
+LAST=$(git tag -l '@xmorse/playwright-core@*' --sort=-v:refname | head -1)
+git log --oneline "$LAST"..HEAD -- packages/playwright-core/
+```
+
 after publishing the CLI (`playwriter` npm package), always create GitHub releases for both the CLI and the extension (if extension code changed). this is a manual step of every CLI release. `pnpm release` only builds the zip for the Chrome Web Store and never creates a GitHub release, so the extension GitHub release happens here, never skip it.
 
 check for unreleased extension changes against the last extension **GitHub release**, not the last `extension@` tag (tags are created on every manifest bump):
