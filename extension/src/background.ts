@@ -10,6 +10,7 @@ import dedent from 'string-dedent'
 const js = dedent
 import { createStore } from 'zustand/vanilla'
 import type { ExtensionState, ConnectionState, TabState, TabInfo } from './types'
+import { initPlaywriterToolbar } from './toolbar/toolbar'
 import type { CDPEvent, Protocol } from 'playwriter/src/cdp-types'
 import type { CloseTabsForKeyResult, ExtensionCommandMessage, ExtensionResponseMessage } from 'playwriter/src/protocol'
 import {
@@ -484,8 +485,9 @@ class ConnectionManager {
         if (this.ws === socket && attemptId === this.currentAttemptId) {
           // Recordings live in the relay, so they end with it.
           recorderActive = false
-          menuRecordingId = null
+          skillRecordingId = null
           updateActionMenu()
+          setRecorderStateInAllTabs(false)
           this.handleClose(event.reason, event.code)
         }
       }
@@ -852,13 +854,14 @@ async function dispatchRelayMessage(message: any, sink: RelayMessageSink): Promi
     return
   }
 
-  // Relay notifies us when action recording starts/stops: update the icon menu.
+  // Relay notifies us when action recording starts/stops: update the icon menu and toolbars.
   if (message.method === 'setRecorderState') {
     recorderActive = !!(message.params as { recording?: boolean })?.recording
     if (!recorderActive) {
-      menuRecordingId = null
+      skillRecordingId = null
     }
     updateActionMenu()
+    setRecorderStateInAllTabs(recorderActive)
     return
   }
 
@@ -2004,6 +2007,8 @@ async function attachTabDebugger(
       skipAttachedEvent,
     )
 
+    injectToolbar(tabId)
+
     return { targetInfo, sessionId }
   } catch (error) {
     // Clean up debugger if we attached but failed later
@@ -2021,6 +2026,17 @@ function detachTab(tabId: number, shouldDetachDebugger: boolean): void {
     logger.debug('detachTab: tab not found in map:', tabId)
     return
   }
+
+  // Destroy the in-page toolbar (best-effort: tab may already be closing or navigating)
+  void chrome.scripting
+    .executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: () => {
+        window.__playwriterToolbarDestroy?.()
+      },
+    })
+    .catch(() => {})
 
   void chrome.scripting
     .executeScript({
@@ -2061,12 +2077,99 @@ function detachTab(tabId: number, shouldDetachDebugger: boolean): void {
   }
 }
 
-// Skill recorder state for the icon menu. The relay reports every start/stop
-// (CLI or menu) via setRecorderState. menuRecordingId is the recording the menu
-// started, passed back on stop so it is never ambiguous with other recordings.
+// Skill recorder state for the icon menu and the in-page toolbar. The relay reports
+// every start/stop (CLI, menu or toolbar) via setRecorderState. skillRecordingId is
+// the recording the menu or toolbar started, passed back on stop so it is never
+// ambiguous with other recordings.
 let recorderActive = false
-let menuRecordingId: string | null = null
-let menuRecordingStartInFlight = false
+let skillRecordingId: string | null = null
+let skillRecordingStartInFlight = false
+
+// Inject the in-page toolbar into the ISOLATED world (best-effort: silently
+// fails on restricted pages like chrome:// or about:blank)
+function injectToolbar(tabId: number): void {
+  chrome.scripting
+    .executeScript({
+      target: { tabId, allFrames: false },
+      world: 'ISOLATED',
+      func: initPlaywriterToolbar,
+    })
+    .then(() => {
+      syncToolbarState(tabId)
+    })
+    .catch((err: Error) => {
+      logger.debug('Could not inject toolbar (restricted page):', err.message)
+    })
+}
+
+// Sync service-worker state into the isolated toolbar after injection.
+function syncToolbarState(tabId: number): void {
+  chrome.scripting
+    .executeScript({
+      target: { tabId, allFrames: false },
+      world: 'ISOLATED',
+      func: (recording: boolean, remoteActive: boolean) => {
+        window.__playwriterToolbarSetRecording?.(recording)
+        window.__playwriterToolbarSetRemote?.(remoteActive)
+      },
+      args: [recorderActive, remoteTunnel !== null],
+    })
+    .catch(() => {})
+}
+
+function getConnectedTabIds(): number[] {
+  return Array.from(store.getState().tabs.entries())
+    .filter(([_, tab]) => {
+      return tab.state === 'connected'
+    })
+    .map(([tabId]) => {
+      return tabId
+    })
+}
+
+function setRecorderStateInAllTabs(recording: boolean): void {
+  for (const tabId of getConnectedTabIds()) {
+    chrome.scripting
+      .executeScript({
+        target: { tabId, allFrames: false },
+        world: 'ISOLATED',
+        func: (rec: boolean) => {
+          window.__playwriterToolbarSetRecording?.(rec)
+        },
+        args: [recording],
+      })
+      .catch(() => {})
+  }
+}
+
+// Every connected tab shows Remote ON while sharing, so Stop works from any tab.
+function setRemoteStateInAllTabs(active: boolean): void {
+  for (const tabId of getConnectedTabIds()) {
+    chrome.scripting
+      .executeScript({
+        target: { tabId, allFrames: false },
+        world: 'ISOLATED',
+        func: (on: boolean) => {
+          window.__playwriterToolbarSetRemote?.(on)
+        },
+        args: [active],
+      })
+      .catch(() => {})
+  }
+}
+
+function playToolbarSound(tabId: number, name: string): void {
+  chrome.scripting
+    .executeScript({
+      target: { tabId, allFrames: false },
+      world: 'ISOLATED',
+      func: (soundName: string) => {
+        window.__playwriterToolbarPlaySound?.(soundName)
+      },
+      args: [name],
+    })
+    .catch(() => {})
+}
 
 async function connectTab(
   tabId: number,
@@ -2410,6 +2513,7 @@ async function startRemoteControl(
   options: { tunnelId?: string; remoteTabIds?: number[] } = {},
 ): Promise<{ url: string; started: boolean; id: string }> {
   if (remoteTunnel) {
+    setRemoteStateInAllTabs(true)
     return { url: remoteTunnel.tunnel.url, started: false, id: remoteTunnel.tunnelId }
   }
 
@@ -2506,6 +2610,7 @@ async function startRemoteControl(
   tunnel.start()
   persistRemoteTunnel()
   updateActionMenu()
+  setRemoteStateInAllTabs(true)
   logger.log('Remote control started, anchor tab', anchorTabId)
   return { url: tunnel.url, started: true, id: tunnelId }
 }
@@ -2518,6 +2623,7 @@ function stopRemoteControl(): boolean {
   if (runtime === null) {
     return false
   }
+  setRemoteStateInAllTabs(false)
   remoteTunnel = null
   updateActionMenu()
   runtime.tunnel.close()
@@ -2854,7 +2960,7 @@ void resetDebugger().then(() => {
 void connectionManager.maintainLoop()
 
 // ============================================================================
-// Menus. All Playwriter UI lives in Chrome menus, never in the page:
+// Menus. Same actions as the in-page toolbar (toolbar/toolbar.ts), but on any tab:
 //
 //   page right-click (Playwriter submenu)
 //   ├─ Copy Playwriter Locator for this element
@@ -2973,11 +3079,11 @@ function updateActionMenu(): void {
   const sharing = remoteTunnel !== null
   const recordTitle = recorderActive
     ? RECORD_TITLES.recording
-    : menuRecordingStartInFlight
+    : skillRecordingStartInFlight
       ? RECORD_TITLES.starting
       : RECORD_TITLES.idle
   updateMenus([
-    [MENU.record, { title: recordTitle, enabled: !menuRecordingStartInFlight }],
+    [MENU.record, { title: recordTitle, enabled: !skillRecordingStartInFlight }],
     [MENU.share, { visible: !sharing }],
     [MENU.copyRemotePrompt, { visible: sharing }],
     [MENU.copyRemoteId, { visible: sharing }],
@@ -2986,8 +3092,9 @@ function updateActionMenu(): void {
 }
 updateActionMenu()
 
-// Toast in the tab's isolated world (content-script.ts). Best-effort: restricted
-// pages (chrome://, Web Store) cannot run scripts.
+// Toast in the tab's isolated world: the toolbar toast on attached tabs, else the
+// content-script.ts toast. Best-effort: restricted pages (chrome://, Web Store)
+// cannot run scripts.
 async function toastTab(tabId: number, message: string): Promise<void> {
   try {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: ['content-script.js'] })
@@ -2995,7 +3102,7 @@ async function toastTab(tabId: number, message: string): Promise<void> {
       target: { tabId, frameIds: [0] },
       world: 'ISOLATED',
       func: (text: string) => {
-        window.__playwriterShowToast?.(text)
+        ;(window.__playwriterToolbarShowToast ?? window.__playwriterShowToast)?.(text)
       },
       args: [message],
     })
@@ -3029,11 +3136,12 @@ async function markContextMenuTarget(tabId: number): Promise<string | null> {
 
 // Assigns the marked element to globalThis.playwriterPinnedElemN in the MAIN world.
 // No debugger needed, so this works on tabs that are not attached yet.
-async function pinMarkedElement(options: { tabId: number; marker: string }): Promise<number | null> {
+// The toolbar draws its own outlines (persistent on shift-click), so it passes flash: false.
+async function pinMarkedElement(options: { tabId: number; marker: string; flash: boolean }): Promise<number | null> {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: options.tabId, frameIds: [0] },
     world: 'MAIN',
-    func: (marker: string) => {
+    func: (marker: string, flash: boolean) => {
       const selector = `[data-playwriter-pin-target="${marker}"]`
       const find = (root: Document | ShadowRoot): Element | null => {
         const hit = root.querySelector(selector)
@@ -3057,7 +3165,7 @@ async function pinMarkedElement(options: { tabId: number; marker: string }): Pro
       window.__playwriterPinCount = pinNumber
       window[`playwriterPinnedElem${pinNumber}`] = target
       const style = (target as HTMLElement).style
-      if (style) {
+      if (flash && style) {
         const prevOutline = style.outline
         const prevOffset = style.outlineOffset
         style.outline = '2px solid #22c55e'
@@ -3069,7 +3177,7 @@ async function pinMarkedElement(options: { tabId: number; marker: string }): Pro
       }
       return pinNumber
     },
-    args: [options.marker],
+    args: [options.marker, options.flash],
   })
   return result?.result || null
 }
@@ -3092,7 +3200,7 @@ async function copyElementLocator(options: { info: chrome.contextMenus.OnClickDa
     await toastTab(tabId, 'Reload the page and try again')
     return
   }
-  const pinNumber = await pinMarkedElement({ tabId, marker })
+  const pinNumber = await pinMarkedElement({ tabId, marker, flash: true })
   if (!pinNumber) {
     await toastTab(tabId, 'Could not pin element')
     return
@@ -3108,18 +3216,30 @@ async function copyElementLocator(options: { info: chrome.contextMenus.OnClickDa
 }
 
 async function toggleRecordingFromMenu(tab: chrome.tabs.Tab): Promise<void> {
-  if (!tab.id || menuRecordingStartInFlight) {
+  if (!tab.id || skillRecordingStartInFlight) {
     return
+  }
+  if (recorderActive) {
+    await stopSkillRecording(tab.id)
+    return
+  }
+  if (await startSkillRecording(tab)) {
+    playSound('record')
+    await toastTab(tab.id, 'Recording')
+  }
+}
+
+// Shared by the menu and the toolbar. The toolbar plays its own start sound.
+async function startSkillRecording(tab: chrome.tabs.Tab): Promise<boolean> {
+  if (!tab.id || skillRecordingStartInFlight) {
+    return false
   }
   const tabId = tab.id
-  if (recorderActive) {
-    await stopRecordingFromMenu(tabId)
-    return
+  if (recorderActive || isRestrictedUrl(tab.url)) {
+    setRecorderStateInAllTabs(recorderActive)
+    return false
   }
-  if (isRestrictedUrl(tab.url)) {
-    return
-  }
-  menuRecordingStartInFlight = true
+  skillRecordingStartInFlight = true
   updateActionMenu()
   try {
     // The recorder records attached tabs, so attach this one first.
@@ -3128,7 +3248,7 @@ async function toggleRecordingFromMenu(tab: chrome.tabs.Tab): Promise<void> {
     }
     if (store.getState().tabs.get(tabId)?.state !== 'connected') {
       await toastTab(tabId, 'Start playwriter first')
-      return
+      return false
     }
     const response = await fetch(`http://${RELAY_HOST}:${RELAY_PORT}/recorder/start`, {
       method: 'POST',
@@ -3141,27 +3261,28 @@ async function toggleRecordingFromMenu(tab: chrome.tabs.Tab): Promise<void> {
     if (!response.ok || !result.recordingId) {
       logger.error('Action recorder start failed:', result.error || response.status)
       await toastTab(tabId, result.error || 'Failed to start recording')
-      return
+      return false
     }
-    menuRecordingId = result.recordingId
+    skillRecordingId = result.recordingId
     recorderActive = true
-    playSound('record')
-    await toastTab(tabId, 'Recording')
+    return true
   } catch (error) {
     logger.error('Action recorder start failed:', error)
     await toastTab(tabId, 'Failed to start recording')
+    return false
   } finally {
-    menuRecordingStartInFlight = false
+    skillRecordingStartInFlight = false
     updateActionMenu()
+    setRecorderStateInAllTabs(recorderActive)
   }
 }
 
-async function stopRecordingFromMenu(tabId: number): Promise<void> {
+async function stopSkillRecording(tabId: number): Promise<void> {
   try {
     const response = await fetch(`http://${RELAY_HOST}:${RELAY_PORT}/recorder/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(menuRecordingId ? { recordingId: menuRecordingId } : {}),
+      body: JSON.stringify(skillRecordingId ? { recordingId: skillRecordingId } : {}),
     })
     const result = (await response.json()) as { recordingId?: string; error?: string }
     if (!result.recordingId) {
@@ -3169,9 +3290,10 @@ async function stopRecordingFromMenu(tabId: number): Promise<void> {
       await toastTab(tabId, result.error || 'Failed to stop recording')
       return
     }
-    menuRecordingId = null
+    skillRecordingId = null
     recorderActive = false
     updateActionMenu()
+    setRecorderStateInAllTabs(false)
     const prompt = dedent`
       I just recorded a browser workflow (recording ${result.recordingId}).
       Analyze it and create a reusable skill from it.
@@ -3644,7 +3766,7 @@ async function copyReactSource(options: { info: chrome.contextMenus.OnClickData;
     return
   }
   const marker = await markContextMenuTarget(tabId)
-  const pinNumber = marker ? await pinMarkedElement({ tabId, marker }) : null
+  const pinNumber = marker ? await pinMarkedElement({ tabId, marker, flash: true }) : null
   if (!pinNumber) {
     await toastTab(tabId, 'Reload the page and try again')
     return
@@ -3776,12 +3898,27 @@ async function ensureOffscreenDocument(): Promise<void> {
 }
 
 async function copyTextInOffscreenDocument(text: string): Promise<void> {
+  await writeClipboardInOffscreenDocument(text)
+  playSound('success')
+}
+
+// Silent: the toolbar plays its own copy sound.
+async function writeClipboardInOffscreenDocument(text: string): Promise<void> {
   await ensureOffscreenDocument()
   const result: OffscreenCopyTextResult = await chrome.runtime.sendMessage({ action: 'copyText', text })
   if (!result.success) {
     throw new Error('Could not copy to clipboard', { cause: new Error(result.error) })
   }
-  playSound('success')
+}
+
+// Toolbar messages come from the isolated world of the top frame of an attached tab.
+// Page scripts cannot call chrome.runtime, so they cannot send these.
+function getToolbarSenderTabId(sender: chrome.runtime.MessageSender): number | null {
+  const tabId = sender.tab?.id
+  if (!tabId || sender.frameId !== 0 || store.getState().tabs.get(tabId)?.state !== 'connected') {
+    return null
+  }
+  return tabId
 }
 
 // Fire and forget: a missing sound must never fail the action.
@@ -3798,14 +3935,17 @@ function playSound(sound: SoundName): void {
     })
 }
 
-// Handle messages from share.html (Remote control)
+// Handle messages from share.html (Remote control) and the in-page toolbar
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Sent by share.html after the user confirms Remote control.
+  // Sent by share.html with a tabId, or by the toolbar after its in-page confirm dialog.
   if (message.action === 'remoteControlStart') {
-    const tabId = message.tabId
-    if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL('src/share.html'))) {
+    const fromSharePage =
+      sender.id === chrome.runtime.id && Boolean(sender.url?.startsWith(chrome.runtime.getURL('src/share.html')))
+    const toolbarTabId = fromSharePage ? null : getToolbarSenderTabId(sender)
+    if (!fromSharePage && !toolbarTabId) {
       return false
     }
+    const tabId = fromSharePage ? message.tabId : toolbarTabId
     if (typeof tabId !== 'number') {
       sendResponse({ success: false, error: 'Missing tab' })
       return false
@@ -3822,15 +3962,105 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })().then(
       () => {
+        if (toolbarTabId) {
+          void toastTab(toolbarTabId, 'Copied prompt')
+        }
         sendResponse({ success: true })
       },
       (error: Error) => {
         logger.error('Remote control start failed:', error)
+        if (toolbarTabId) {
+          void toastTab(toolbarTabId, `Remote control failed: ${error.message}`)
+        }
         sendResponse({ success: false, error: error.message })
       },
     )
     return true
   }
 
+  if (message.action === 'remoteControlStop') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId) {
+      return false
+    }
+    stopRemoteControl()
+    void toastTab(tabId, 'Sharing stopped')
+    playToolbarSound(tabId, 'click')
+    return false
+  }
+
+  if (message.action === 'remoteControlCopyPrompt' || message.action === 'remoteControlCopyId') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId) {
+      return false
+    }
+    void copyRemoteText({ tabId, kind: message.action === 'remoteControlCopyPrompt' ? 'prompt' : 'id' })
+    return false
+  }
+
+  if (message.action === 'actionRecorderStart') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId || !sender.tab) {
+      return false
+    }
+    void startSkillRecording(sender.tab)
+    return false
+  }
+
+  if (message.action === 'actionRecorderStop') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId) {
+      return false
+    }
+    void stopSkillRecording(tabId)
+    return false
+  }
+
+  if (message.action === 'copyToolbarText') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId || typeof message.text !== 'string') {
+      return false
+    }
+    void writeClipboardInOffscreenDocument(message.text).catch((error: Error) => {
+      logger.error('Could not copy toolbar text:', error)
+      void toastTab(tabId, 'Copy failed')
+    })
+    return false
+  }
+
+  if (message.action === 'pinToolbarElement') {
+    const tabId = getToolbarSenderTabId(sender)
+    if (!tabId || typeof message.marker !== 'string') {
+      return false
+    }
+    pinMarkedElement({ tabId, marker: message.marker, flash: false }).then(
+      (pinNumber) => {
+        sendResponse({ pinNumber: pinNumber || undefined })
+      },
+      (error: Error) => {
+        logger.error('Could not pin toolbar element:', error)
+        sendResponse({})
+      },
+    )
+    return true
+  }
+
   return false
+})
+
+// Re-inject the toolbar after hard navigations in connected tabs.
+// The isolated script is destroyed on every full page load, so we re-run
+// initPlaywriterToolbar once the new document's DOM is ready.
+// onDOMContentLoaded is used instead of onCommitted because executeScript
+// needs the new document to exist.
+// SPA route changes (pushState/replaceState) don't reset the document, so the
+// toolbar DOM persists across them.
+chrome.webNavigation.onDOMContentLoaded.addListener((details) => {
+  if (details.frameId !== 0) {
+    return
+  }
+  if (store.getState().tabs.get(details.tabId)?.state !== 'connected') {
+    return
+  }
+  injectToolbar(details.tabId)
 })

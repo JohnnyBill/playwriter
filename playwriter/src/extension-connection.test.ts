@@ -122,6 +122,134 @@ describe('Extension Connection Tests', () => {
     await page.close()
   }, 120000)
 
+  it('does not let page scripts trigger isolated toolbar actions', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+    const page = await browserContext.newPage()
+    await page.goto('https://example.com/')
+    await page.bringToFront()
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    await page.locator('[data-playwriter-toolbar="1"]').first().waitFor()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const pageCallbacks = await page.evaluate(() => {
+      return {
+        recorder: typeof window.__playwriterToolbarStartRecording,
+        startRemote: typeof window.__playwriterToolbarStartRemote,
+        stopRemote: typeof window.__playwriterToolbarStopRemote,
+        toggleRemote: typeof Reflect.get(window, '__playwriterToolbarToggleRemote'),
+      }
+    })
+    const isolatedCallbacks = await serviceWorker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.id) {
+        throw new Error('No active tab')
+      }
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: 'ISOLATED',
+        func: () => {
+          return {
+            startRemote: typeof window.__playwriterToolbarStartRemote,
+            stopRemote: typeof window.__playwriterToolbarStopRemote,
+            toggleRemote: typeof Reflect.get(window, '__playwriterToolbarToggleRemote'),
+          }
+        },
+      })
+      return result.result
+    })
+    await page.evaluate(() => {
+      window.postMessage({ __playwriter: 'remote_toggle' }, '*')
+      window.postMessage({ __playwriter: 'recorder_start' }, '*')
+    })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    const remoteState = await serviceWorker.evaluate(() => {
+      return globalThis.getRemoteControlState()
+    })
+    if (remoteState) {
+      await serviceWorker.evaluate(() => {
+        globalThis.stopRemoteControl()
+      })
+    }
+
+    // chrome.runtime.sendMessage broadcasts to every extension context, so the
+    // offscreen document must ignore actions it does not own. Keep the pin check
+    // below while this document is alive: an unfiltered offscreen listener answers
+    // 'pinToolbarElement' before the service worker and silently breaks pinning.
+    const clipboard = await serviceWorker.evaluate(async () => {
+      const offscreenUrl = chrome.runtime.getURL('src/offscreen.html')
+      const existing = await chrome.runtime.getContexts({
+        contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+        documentUrls: [offscreenUrl],
+      })
+      const created = existing.length === 0
+      if (created) {
+        await chrome.offscreen.createDocument({
+          url: 'src/offscreen.html',
+          reasons: [chrome.offscreen.Reason.CLIPBOARD],
+          justification: 'Test isolated clipboard and message routing',
+        })
+      }
+      const result = await chrome.runtime.sendMessage({ action: 'copyText', text: 'isolated toolbar test' })
+      return { result, created }
+    })
+
+    const pinResult = await serviceWorker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.id) {
+        throw new Error('No active tab')
+      }
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: 'ISOLATED',
+        func: async () => {
+          const target = document.querySelector('p')
+          if (!target) {
+            return null
+          }
+          const markerBytes = new Uint8Array(16)
+          crypto.getRandomValues(markerBytes)
+          const marker = Array.from(markerBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+          target.setAttribute('data-playwriter-pin-target', marker)
+          try {
+            return await chrome.runtime.sendMessage({ action: 'pinToolbarElement', marker })
+          } finally {
+            target.removeAttribute('data-playwriter-pin-target')
+          }
+        },
+      })
+      return result.result
+    })
+    if (clipboard.created) {
+      await serviceWorker.evaluate(async () => {
+        await chrome.offscreen.closeDocument()
+      })
+    }
+    const pinnedText = await page.evaluate(() => {
+      return window.playwriterPinnedElem1?.textContent
+    })
+    await page.close()
+
+    expect(pageCallbacks).toEqual({
+      recorder: 'undefined',
+      startRemote: 'undefined',
+      stopRemote: 'undefined',
+      toggleRemote: 'undefined',
+    })
+    expect(isolatedCallbacks).toEqual({
+      startRemote: 'function',
+      stopRemote: 'function',
+      toggleRemote: 'undefined',
+    })
+    expect(remoteState).toBeNull()
+    expect(clipboard.result).toEqual({ success: true })
+    expect(pinResult).toEqual({ pinNumber: 1 })
+    expect(pinnedText).toContain('documentation examples')
+  }, 120000)
+
   // Right-click "Copy Playwriter Locator" must work before the tab is attached:
   // the isolated content script remembers the target, the service worker pins it
   // in the MAIN world, then attaches the tab so the agent can inspect the pin.
@@ -390,6 +518,154 @@ describe('Extension Connection Tests', () => {
       await page.close()
     }
   }, 60_000)
+
+  // Clicks the real button instead of calling the handler, so the trusted-click guard
+  // stays covered. Page CSS like `div{opacity:0.8}` once matched the toolbar host and
+  // disabled Record Skill and Remote control on every page.
+  it('starts and stops Record Skill from a real toolbar click', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+    const page = await browserContext.newPage()
+    await page.goto('https://example.com/')
+    await page.bringToFront()
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    const toolbar = page.locator('[data-playwriter-toolbar="1"]').first()
+    await toolbar.waitFor()
+    const box = await toolbar.boundingBox()
+    if (!box) {
+      throw new Error('Toolbar is not visible')
+    }
+
+    // The toolbar is icon-only until hovered, then labels expand over 200ms.
+    // Hover first and click in the expanded layout, where Record Skill sits
+    // right after the labeled Copy Locator button.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    let lastWidth = 0
+    await expect
+      .poll(async () => {
+        const width = (await toolbar.boundingBox())?.width || 0
+        const settled = width > box.width && width === lastWidth
+        lastWidth = width
+        return settled
+      })
+      .toBe(true)
+    const expandedBox = await toolbar.boundingBox()
+    if (!expandedBox) {
+      throw new Error('Expanded toolbar is not visible')
+    }
+    await page.mouse.click(expandedBox.x + 155, expandedBox.y + expandedBox.height / 2)
+    await expect
+      .poll(async () => {
+        const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
+        const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
+        return status.recordings.length
+      })
+      .toBe(1)
+
+    const activeBox = await toolbar.boundingBox()
+    if (!activeBox) {
+      throw new Error('Active toolbar is not visible')
+    }
+    await page.mouse.click(activeBox.x + 155, activeBox.y + activeBox.height / 2)
+    await expect
+      .poll(async () => {
+        const response = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
+        const status = (await response.json()) as { recordings: Array<{ recordingId: string }> }
+        return status.recordings.length
+      })
+      .toBe(0)
+    await page.close()
+  }, 120000)
+
+  // Agent clicks used to fail with "<div data-playwriter-toolbar> intercepts pointer
+  // events". The Playwright fork marks the toolbar host before each hit-target check
+  // (data-playwriter-agent), the toolbar CSS goes pass-through, then restores after 1s.
+  it('lets agent clicks and keys pass through the toolbar', async () => {
+    const browserContext = getBrowserContext()
+    const serviceWorker = await getExtensionServiceWorker(browserContext)
+    const page = await browserContext.newPage()
+    const testUrl = 'https://example.com/?toolbar-pass-through'
+    await page.goto(testUrl)
+    await page.bringToFront()
+    await serviceWorker.evaluate(async () => {
+      await globalThis.toggleExtensionForActiveTab()
+    })
+    const toolbar = page.locator('[data-playwriter-toolbar="1"]').first()
+    await toolbar.waitFor()
+    const box = await toolbar.boundingBox()
+    if (!box) {
+      throw new Error('Toolbar is not visible')
+    }
+    await page.evaluate((rect) => {
+      const button = document.createElement('button')
+      button.id = 'under-toolbar'
+      button.textContent = 'under'
+      button.style.cssText = `position:fixed;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;z-index:1;`
+      button.addEventListener('click', () => {
+        Reflect.set(window, '__underClicks', Number(Reflect.get(window, '__underClicks') || 0) + 1)
+      })
+      document.body.appendChild(button)
+    }, box)
+
+    const directBrowser = await chromium.connectOverCDP(getCdpUrl({ port: TEST_PORT }))
+    try {
+      const agentPage = directBrowser
+        .contexts()[0]
+        .pages()
+        .find((p) => {
+          return p.url() === testUrl
+        })
+      if (!agentPage) {
+        throw new Error('Agent page not found')
+      }
+
+      await agentPage.locator('#under-toolbar').click({ timeout: 5000 })
+      // x: 52 is the Record Skill icon in the collapsed, icon-only toolbar.
+      await agentPage.locator('#under-toolbar').click({ position: { x: 52, y: box.height / 2 }, timeout: 5000 })
+      const focusedToolbar: boolean[] = []
+      for (let i = 0; i < 4; i++) {
+        await agentPage.keyboard.press('Tab')
+        focusedToolbar.push(
+          await agentPage.evaluate(() => {
+            return Boolean(document.activeElement?.hasAttribute('data-playwriter-toolbar'))
+          }),
+        )
+      }
+
+      const recorderResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/recorder/status`)
+      const recorderStatus = (await recorderResponse.json()) as { recordings: unknown[] }
+      expect({
+        underClicks: await page.evaluate(() => {
+          return Reflect.get(window, '__underClicks')
+        }),
+        recordings: recorderStatus.recordings.length,
+        focusedToolbar: focusedToolbar.includes(true),
+      }).toMatchInlineSnapshot(`
+        {
+          "focusedToolbar": false,
+          "recordings": 0,
+          "underClicks": 2,
+        }
+      `)
+
+      // Once the agent goes idle the toolbar takes pointer input again for the user.
+      await expect
+        .poll(
+          async () => {
+            return await page.evaluate((point) => {
+              return Boolean(document.elementFromPoint(point.x, point.y)?.hasAttribute('data-playwriter-toolbar'))
+            }, { x: box.x + box.width / 2, y: box.y + box.height / 2 })
+          },
+          { timeout: 5000 },
+        )
+        .toBe(true)
+    } finally {
+      await directBrowser.close()
+      await page.close()
+    }
+  }, 120000)
 
   it('should handle new pages and toggling with persistent connection', async () => {
     const browserContext = getBrowserContext()

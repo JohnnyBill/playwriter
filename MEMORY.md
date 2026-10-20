@@ -242,13 +242,15 @@ Neither is a regression signal for unrelated changes. Careful: `pnpm test`
 passes `-u`, so these failing snapshot tests get rewritten with wrong values —
 always review the test-file git diff after a full run.
 
-## No in-page UI, menus only (Oct 2026)
+## Toolbar plus menus (Oct 2026)
 
-The in-page toolbar was removed. Page CSS could restyle or cover it, and a
-`window.postMessage` bridge once let any page start recording or remote
-control. All actions now live in Chrome menus (page right-click, icon
-right-click). Remote control consent lives in `share.html`, an extension page
-the website cannot touch. The isolated content script only remembers the last
+The in-page toolbar was removed for menus, then restored next to them. Page CSS
+can restyle or cover it, so it lives in the ISOLATED world in a closed shadow
+root, checks clicks with `isTrustedToolbarClick`, and talks to the service
+worker only via `chrome.runtime.sendMessage` (a `window.postMessage` bridge once
+let any page start recording or remote control). Menus (page right-click, icon
+right-click) offer the same actions on any tab; menu Remote control consent
+lives in `share.html`. The isolated content script only remembers the last
 right-clicked element and draws toasts; never expose it to the MAIN world.
 
 ## Offscreen document must filter chrome.runtime messages (Apr 2026)

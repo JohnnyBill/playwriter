@@ -2,7 +2,7 @@
 'playwriter': minor
 ---
 
-Remove the in-page toolbar. All Playwriter actions now live in Chrome menus, so nothing is drawn over pages and agent clicks are never blocked.
+Add Playwriter actions to Chrome menus. The in-page toolbar stays on attached tabs; the menus offer the same actions on any tab.
 
 ```
 page right-click > Playwriter         extension icon right-click
@@ -20,5 +20,6 @@ Every icon menu item also shows on page right-click, so they are easy to find. M
 - **Record skill** attaches the current tab first, then starts the recorder. Click again to stop and copy the agent prompt.
 - **Share browser…** opens a small confirm window from the extension. Click **Share** to start Remote control and copy the agent prompt.
 - Short toasts confirm each action, like `Copied locator`.
+- The toolbar and the menus share one recorder and Remote control state, so you can start from one and stop from the other.
 
 Fixes #126
