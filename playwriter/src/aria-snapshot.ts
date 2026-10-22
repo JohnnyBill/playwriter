@@ -1630,69 +1630,75 @@ export async function screenshotWithAccessibilityLabels({
     log(`showAriaRefLabels: ${Date.now() - showLabelsStart}ms`)
   }
 
-  // Generate unique filename with timestamp
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 6)
-  const filename = `playwriter-screenshot-${timestamp}-${random}.png`
+  let screenshotPath: string
+  let base64: string
+  try {
+    // Generate unique filename with timestamp
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).slice(2, 6)
+    const filename = `playwriter-screenshot-${timestamp}-${random}.png`
 
-  // Use ./tmp folder (gitignored) instead of system temp
-  const tmpDir = path.join(process.cwd(), 'tmp')
-  if (!fs.existsSync(tmpDir)) {
-    fs.mkdirSync(tmpDir, { recursive: true })
-  }
-  const screenshotPath = path.join(tmpDir, filename)
-
-  // Get viewport size to clip screenshot to visible area
-  const viewport = await page.evaluate(() => {
-    return { width: window.innerWidth, height: window.innerHeight }
-  })
-
-  // Check if sharp is available for resizing
-  const sharp = await sharpPromise
-
-  // Clip dimensions: if sharp unavailable, limit capture area to LLM_MAX_DIMENSION
-  const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
-  const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
-
-  // Take viewport screenshot as PNG for Kitty Graphics Protocol compatibility.
-  // PNG is lossless and the only format extracted by kitty-graphics-agent (f=100).
-  const screenshotStart = Date.now()
-  const rawBuffer = await page.screenshot({
-    type: 'png',
-    scale: 'css',
-    clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
-  })
-  if (log) {
-    log(`page.screenshot: ${Date.now() - screenshotStart}ms`)
-  }
-
-  // Resize with resizeImage if sharp available, otherwise use clipped raw buffer
-  const resizeStart = Date.now()
-  const buffer = await (async () => {
-    if (!sharp) {
-      logger?.error?.('[playwriter] sharp not available, using clipped screenshot (max', LLM_MAX_DIMENSION, 'px)')
-      return rawBuffer
+    // Use ./tmp folder (gitignored) instead of system temp
+    const tmpDir = path.join(process.cwd(), 'tmp')
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true })
     }
-    try {
-      const result = await resizeImageForAgent({ input: rawBuffer, format: 'png' })
-      return result.buffer
-    } catch (err) {
-      logger?.error?.('[playwriter] sharp resize failed, using raw buffer:', err)
-      return rawBuffer
+    screenshotPath = path.join(tmpDir, filename)
+
+    // Get viewport size to clip screenshot to visible area
+    const viewport = await page.evaluate(() => {
+      return { width: window.innerWidth, height: window.innerHeight }
+    })
+
+    // Check if sharp is available for resizing
+    const sharp = await sharpPromise
+
+    // Clip dimensions: if sharp unavailable, limit capture area to LLM_MAX_DIMENSION
+    const clipWidth = sharp ? viewport.width : Math.min(viewport.width, LLM_MAX_DIMENSION)
+    const clipHeight = sharp ? viewport.height : Math.min(viewport.height, LLM_MAX_DIMENSION)
+
+    // Take viewport screenshot as PNG for Kitty Graphics Protocol compatibility.
+    // PNG is lossless and the only format extracted by kitty-graphics-agent (f=100).
+    const screenshotStart = Date.now()
+    const rawBuffer = await page.screenshot({
+      type: 'png',
+      scale: 'css',
+      clip: { x: 0, y: 0, width: clipWidth, height: clipHeight },
+    })
+    if (log) {
+      log(`page.screenshot: ${Date.now() - screenshotStart}ms`)
     }
-  })()
-  if (log) {
-    log(`screenshot resize: ${Date.now() - resizeStart}ms`)
+
+    // Resize with resizeImage if sharp available, otherwise use clipped raw buffer
+    const resizeStart = Date.now()
+    const buffer = await (async () => {
+      if (!sharp) {
+        logger?.error?.('[playwriter] sharp not available, using clipped screenshot (max', LLM_MAX_DIMENSION, 'px)')
+        return rawBuffer
+      }
+      try {
+        const result = await resizeImageForAgent({ input: rawBuffer, format: 'png' })
+        return result.buffer
+      } catch (err) {
+        logger?.error?.('[playwriter] sharp resize failed, using raw buffer:', err)
+        return rawBuffer
+      }
+    })()
+    if (log) {
+      log(`screenshot resize: ${Date.now() - resizeStart}ms`)
+    }
+
+    // Save to file
+    fs.writeFileSync(screenshotPath, buffer)
+
+    // Convert to base64
+    base64 = buffer.toString('base64')
+  } finally {
+    // Hide labels even when capture or the file write fails, without masking that error
+    await hideAriaRefLabels({ page }).catch((err) => {
+      logger?.error?.('[playwriter] failed to hide accessibility labels:', err)
+    })
   }
-
-  // Save to file
-  fs.writeFileSync(screenshotPath, buffer)
-
-  // Convert to base64
-  const base64 = buffer.toString('base64')
-
-  // Hide labels
-  await hideAriaRefLabels({ page })
 
   // Add to collector array
   collector.push({
