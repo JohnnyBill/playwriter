@@ -1838,7 +1838,10 @@ export async function screenshotWithAccessibilityLabels({
       labelCount,
     })
   } finally {
-    await hideAriaRefLabels({ page })
+    // Hide labels even when capture fails, without masking that error
+    await hideAriaRefLabels({ page }).catch((err) => {
+      logger?.error?.('[playwriter] failed to hide accessibility labels:', err)
+    })
   }
 }
 
