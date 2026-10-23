@@ -124,21 +124,15 @@ export class CodeExecutionTimeoutError extends Error {
   constructor(timeout: number) {
     super(
       `Code execution timed out after ${timeout}ms. The code may still be running and its effects are not rolled back. ` +
-        `New executions in this session are rejected until it settles (its outcome is then reported) or the session is reset. ` +
-        `Check the page and state before retrying actions.`,
+        `New calls in this session are rejected until it settles or the session is reset.`,
     )
     this.name = 'CodeExecutionTimeoutError'
   }
 }
 
-/** Returned when a new execute arrives while a previously timed-out script is still running. */
 export class PreviousExecutionRunningError extends Error {
-  constructor({ timeout, timedOutAt }: { timeout: number; timedOutAt: number }) {
-    const secondsAgo = ((Date.now() - timedOutAt) / 1000).toFixed(1)
-    super(
-      `This code did not run. A previous execution timed out after ${timeout}ms (${secondsAgo}s ago) and is still running. ` +
-        `Retry later to get its outcome, or reset the session to stop waiting for it (reset does not cancel it).`,
-    )
+  constructor() {
+    super('This code did not run. A previous execution timed out and is still running. Retry later, or reset the session.')
     this.name = 'PreviousExecutionRunningError'
   }
 }
@@ -494,9 +488,8 @@ export class PlaywrightExecutor {
   private pagesWithListeners = new WeakSet<Page>()
   private suppressPageCloseWarnings = false
   private operationTail: Promise<void> = Promise.resolve()
-  // A script that lost the race against its execute timeout keeps running in the
-  // background. Tracked outside operationTail so it never blocks reset/dispose.
-  private timedOutExecution: { timeout: number; timedOutAt: number } | null = null
+  // A timed-out script keeps running. Tracked outside operationTail so it never blocks reset/dispose.
+  private timedOutScript: Promise<void> | null = null
   private disposing = false
   private disposePromise: Promise<void> | null = null
 
@@ -632,29 +625,7 @@ export class PlaywrightExecutor {
     this.nextOutputEventId = 0
     this.lastDeliveredOutputEventId = 0
     this.activeOutputScopes.clear()
-    this.timedOutExecution = null
-  }
-
-  /** Report a timed-out script's outcome once it settles, unless reset/dispose replaced the session state first. */
-  private trackTimedOutExecution({ promise, timeout }: { promise: Promise<unknown>; timeout: number }) {
-    const pending = { timeout, timedOutAt: Date.now() }
-    this.timedOutExecution = pending
-    promise
-      .then(
-        () => 'finished',
-        (error: any) => `failed with: ${error?.message ?? String(error)}`,
-      )
-      .then((outcome) => {
-        if (this.timedOutExecution !== pending) {
-          return
-        }
-        this.timedOutExecution = null
-        const lateSeconds = ((Date.now() - pending.timedOutAt) / 1000).toFixed(1)
-        this.enqueueWarning(
-          `The execution that timed out after ${timeout}ms ${outcome} (${lateSeconds}s after the timeout). ` +
-            `Its side effects may have changed the page or state.`,
-        )
-      })
+    this.timedOutScript = null
   }
 
   private clearConnectionState() {
@@ -1271,14 +1242,10 @@ export class PlaywrightExecutor {
       return text + '\n'
     }
 
-    // Set once this execute call returns. A script still running after that
-    // (timed out or detached work) must not reset the session underneath later calls.
-    let executionReturned = false
-
     try {
       // Checked inside the queued operation so calls queued before the timeout are rejected too
-      if (this.timedOutExecution) {
-        throw new PreviousExecutionRunningError(this.timedOutExecution)
+      if (this.timedOutScript) {
+        throw new PreviousExecutionRunningError()
       }
 
       // Warn if cloud VM is approaching its hard timeout (deduped by minute bucket)
@@ -1835,9 +1802,6 @@ export class PlaywrightExecutor {
         cancelRecording: recordingApi.cancel,
         createDemoVideo,
         resetPlaywright: async () => {
-          if (executionReturned) {
-            throw new Error('resetPlaywright() ignored: its execute call already returned or timed out')
-          }
           const { context: newContext } = await self.resetInternal()
           vmContextObj.context = newContext
           vmContextObj.browser = self.browser
@@ -1921,26 +1885,28 @@ export class PlaywrightExecutor {
         : -1
 
       const result = await (async () => {
-        let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+        let timer: ReturnType<typeof setTimeout> | undefined
         try {
-          // The vm timeout only covers synchronous code; async work is bounded by the race below.
-          const scriptPromise = Promise.resolve(script.runInContext(vmContext, { timeout, displayErrors: true }))
-          try {
-            return await Promise.race([
-              scriptPromise,
-              new Promise((_, reject) => {
-                timeoutTimer = setTimeout(() => reject(new CodeExecutionTimeoutError(timeout)), timeout)
-              }),
-            ])
-          } catch (error) {
-            if (error instanceof CodeExecutionTimeoutError) {
-              // The race does not cancel the script; keep watching it so later calls cannot overlap it
-              this.trackTimedOutExecution({ promise: scriptPromise, timeout })
-            }
-            throw error
-          }
+          const scriptPromise: Promise<unknown> = script.runInContext(vmContext, { timeout, displayErrors: true })
+          return await Promise.race([
+            scriptPromise,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => {
+                // The race does not cancel the script. Block later calls until it settles, then report it.
+                const pending = scriptPromise
+                  .then(() => 'finished', (error: any) => `failed with: ${error?.message ?? String(error)}`)
+                  .then((outcome) => {
+                    if (this.timedOutScript !== pending) return
+                    this.timedOutScript = null
+                    this.enqueueWarning(`The execution that timed out after ${timeout}ms ${outcome}. Check the page and state.`)
+                  })
+                this.timedOutScript = pending
+                reject(new CodeExecutionTimeoutError(timeout))
+              }, timeout)
+            }),
+          ])
         } finally {
-          clearTimeout(timeoutTimer)
+          clearTimeout(timer)
           // Record timestamp even on error — the execution still occupied real time
           // that should not be sped up in the demo video.
           // Compare against snapshot to avoid cross-session contamination if
@@ -2037,8 +2003,6 @@ export class PlaywrightExecutor {
         screenshots: [],
         isError: true,
       }
-    } finally {
-      executionReturned = true
     }
   }
 

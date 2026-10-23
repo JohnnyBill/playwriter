@@ -985,7 +985,7 @@ describe('Relay Core Tests', () => {
         timeout: 300,
         code: `
           state.lateDone = false
-          await new Promise((resolve) => setTimeout(resolve, 1500))
+          await new Promise((resolve) => setTimeout(resolve, 600))
           state.lateDone = true
         `,
       })
@@ -998,7 +998,7 @@ describe('Relay Core Tests', () => {
       expect(rejected.text).toContain('This code did not run')
 
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 1500)
+        setTimeout(resolve, 600)
       })
       const afterLateFinish = await executeCli({ sessionId, code: `return [state.lateDone, state.ranWhileBusy]` })
       expect(afterLateFinish.isError).toBe(false)
@@ -1015,7 +1015,7 @@ describe('Relay Core Tests', () => {
       })
       expect(lateFailure.isError).toBe(true)
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 800)
+        setTimeout(resolve, 600)
       })
       const afterLateFailure = await executeCli({ sessionId, code: `return 'ok'` })
       expect(afterLateFailure.isError).toBe(false)
@@ -1052,39 +1052,6 @@ describe('Relay Core Tests', () => {
 
       const afterReset = await executeCli({ sessionId, code: `return 'after reset'` })
       expect(afterReset).toMatchObject({ isError: false, text: expect.stringContaining('after reset') })
-    } finally {
-      await deleteCliSession(sessionId)
-    }
-  }, 30000)
-
-  it('ignores resetPlaywright() from a script that already timed out', async () => {
-    await ensureConnectedTabForExecute()
-    const sessionId = await createCliSession()
-
-    try {
-      const timedOut = await executeCli({
-        sessionId,
-        timeout: 300,
-        code: `
-          state.keep = 'kept'
-          await new Promise((resolve) => setTimeout(resolve, 600))
-          try {
-            await resetPlaywright()
-            state.staleReset = 'ran'
-          } catch (error) {
-            state.staleReset = error.message
-          }
-        `,
-      })
-      expect(timedOut.isError).toBe(true)
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 1000)
-      })
-
-      const result = await executeCli({ sessionId, code: `return [state.keep, state.staleReset]` })
-      expect(result.isError).toBe(false)
-      expect(result.text).toContain('kept')
-      expect(result.text).toContain('resetPlaywright() ignored')
     } finally {
       await deleteCliSession(sessionId)
     }
